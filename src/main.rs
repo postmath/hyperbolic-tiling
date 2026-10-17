@@ -1,5 +1,6 @@
 mod gpu;
 mod hyp;
+mod quotient;
 mod tiling;
 mod view;
 
@@ -16,7 +17,6 @@ use winit::{
 };
 
 use gpu::{Renderer, Uniforms};
-use hyp::lorentz_inv;
 use tiling::Tiling;
 use view::View;
 
@@ -26,7 +26,8 @@ const LINE_WIDTH_PX: f32 = 1.5;
 
 const USAGE: &str = "\
 Drag: pan. Right drag or Shift+drag: rotate.
-P / Shift+P: step p up / down. Q / Shift+Q: step q. R: reset view.";
+P / Shift+P: step p up / down. Q / Shift+Q: step q. R: reset view.
+L / Shift+L: step the prime for tile colors. C: toggle tile colors / two-tone.";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Drag {
@@ -42,14 +43,21 @@ struct App {
     cursor: Option<PhysicalPosition<f64>>,
     modifiers: ModifiersState,
     drag: Option<Drag>,
+    /// Color tiles by the finite quotient, rather than two-tone by parity.
+    quotient_colors: bool,
+    /// Number of quotient colors, if small enough to count.
+    colors: Option<usize>,
 }
 
 impl App {
     fn new() -> Self {
+        let tiling = Tiling::new(7, 3).unwrap();
         Self {
             window: None,
             renderer: None,
-            tiling: Tiling::new(7, 3).unwrap(),
+            tiling,
+            quotient_colors: true,
+            colors: tiling.quotient.orbit_size(),
             view: View::new(),
             cursor: None,
             modifiers: ModifiersState::empty(),
@@ -73,9 +81,10 @@ impl App {
     fn uniforms(&self) -> Uniforms {
         let (w, h, r) = self.geometry();
         Uniforms::new(
-            lorentz_inv(self.view.m),
+            &self.view,
             &self.tiling,
             [w, h, r, LINE_WIDTH_PX],
+            self.quotient_colors,
         )
     }
 
@@ -84,7 +93,20 @@ impl App {
     }
 
     fn title(&self) -> String {
-        format!("{{{},{}}} hyperbolic tiling", self.tiling.p, self.tiling.q)
+        let (t, ell) = (&self.tiling, self.tiling.quotient.ell);
+        let colors = match self.colors {
+            Some(n) => format!("{n} colors mod {ell}"),
+            None => format!("colors mod {ell}"),
+        };
+        format!("{{{},{}}} hyperbolic tiling, {colors}", t.p, t.q)
+    }
+
+    fn set_tiling(&mut self, tiling: Tiling) {
+        self.tiling = tiling;
+        self.colors = tiling.quotient.orbit_size();
+        self.view.reset_colors();
+        self.view.settle(&self.tiling);
+        self.window.as_ref().unwrap().set_title(&self.title());
     }
 
     fn key(&mut self, code: KeyCode) {
@@ -99,10 +121,15 @@ impl App {
                 let Some(t) = self.tiling.stepped(dp, dq) else {
                     return;
                 };
-                self.tiling = t;
-                self.view.settle(&self.tiling);
-                self.window.as_ref().unwrap().set_title(&self.title());
+                self.set_tiling(t);
             }
+            KeyCode::KeyL => {
+                let Some(t) = self.tiling.with_ell_stepped(step.into()) else {
+                    return;
+                };
+                self.set_tiling(t);
+            }
+            KeyCode::KeyC => self.quotient_colors = !self.quotient_colors,
             KeyCode::KeyR => self.view = View::new(),
             _ => return,
         }

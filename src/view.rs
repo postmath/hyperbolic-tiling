@@ -4,6 +4,7 @@ use glam::{DMat3, DVec2};
 
 use crate::{
     hyp::{ORIGIN, disk_to_hyp, lorentz_inv, orthonormalize, reflect, rotate, translate},
+    quotient::{self, ModMat},
     tiling::Tiling,
 };
 
@@ -15,11 +16,23 @@ const ROTATE_RHO_MIN: f64 = 0.02;
 pub struct View {
     /// Tiling frame -> screen frame.
     pub m: DMat3,
+    /// φ(G) for the symmetry G that `settle` has absorbed into `m`: a point x
+    /// of the current tiling frame is G x in the frame the colors refer to.
+    pub color_frame: ModMat,
 }
 
 impl View {
     pub fn new() -> Self {
-        Self { m: DMat3::IDENTITY }
+        Self {
+            m: DMat3::IDENTITY,
+            color_frame: quotient::IDENTITY,
+        }
+    }
+
+    /// Makes the current tiling frame the one colors refer to; needed when the
+    /// quotient changes.
+    pub fn reset_colors(&mut self) {
+        self.color_frame = quotient::IDENTITY;
     }
 
     /// Moves the picture so the point under disk position `from` ends up under `to`.
@@ -39,13 +52,18 @@ impl View {
     /// Re-expresses the same picture with the view center folded into the
     /// fundamental triangle, so M stays near the identity however far one pans,
     /// then removes rounding drift from M.
+    /// With F = r_last ... r_first the fold, M becomes M F⁻¹ = M r_first ... r_last.
     pub fn settle(&mut self, tiling: &Tiling) {
-        let (_, mut f, count, _) = tiling.fold(lorentz_inv(self.m) * ORIGIN);
-        if count % 2 == 1 {
-            // Odd elements swap the two triangle colors; one more mirror fixes that.
-            f = reflect(tiling.mirrors[0]) * f;
+        let mut word = tiling.fold(lorentz_inv(self.m) * ORIGIN).word;
+        if word.len() % 2 == 1 {
+            // Odd elements swap the two triangle shades; one more mirror fixes that.
+            word.push(0);
         }
-        self.m = orthonormalize(self.m * lorentz_inv(f));
+        for k in word {
+            self.m *= reflect(tiling.mirrors[k]);
+            self.color_frame = tiling.quotient.reflect_right(self.color_frame, k);
+        }
+        self.m = orthonormalize(self.m);
     }
 }
 
@@ -62,6 +80,7 @@ fn clamp(d: DVec2) -> DVec2 {
 mod tests {
     use super::*;
     use crate::hyp::{hyp_to_disk, lorentz_inv};
+    use std::f64::consts::PI;
 
     #[test]
     fn grabbed_point_stays_under_cursor() {
@@ -79,10 +98,16 @@ mod tests {
         assert!((d - path[2]).length() < 1e-9);
     }
 
-    /// Folded tiling point and parity under screen point `d`, as the shader sees it.
-    fn sample(v: &View, t: &Tiling, d: DVec2) -> (glam::DVec3, u32) {
-        let (y, _, count, _) = t.fold(lorentz_inv(v.m) * disk_to_hyp(d));
-        (y, count % 2)
+    /// Folded tiling point, parity and tile color under screen point `d`, as
+    /// the shader computes them.
+    fn sample(v: &View, t: &Tiling, d: DVec2) -> (glam::DVec3, usize, [u32; 3]) {
+        let f = t.fold(lorentz_inv(v.m) * disk_to_hyp(d));
+        let quot = &t.quotient;
+        let acc = f
+            .word
+            .iter()
+            .fold(v.color_frame, |a, &k| quot.reflect_right(a, k));
+        (f.point, f.word.len() % 2, quot.apply(acc, quot.v0))
     }
 
     #[test]
@@ -107,8 +132,9 @@ mod tests {
             }
             if i == 49 {
                 for d in probes {
-                    let ((yr, pr), (ys, ps)) = (sample(&raw, &t, d), sample(&settled, &t, d));
-                    assert_eq!(pr, ps);
+                    let ((yr, pr, cr), (ys, ps, cs)) =
+                        (sample(&raw, &t, d), sample(&settled, &t, d));
+                    assert_eq!((pr, cr), (ps, cs));
                     assert!((yr - ys).abs().max_element() < 1e-6, "{yr} vs {ys}");
                 }
                 assert!(raw.m.abs().to_cols_array().iter().any(|&x| x > 20.0));
@@ -116,6 +142,20 @@ mod tests {
             assert!(settled.m.abs().to_cols_array().iter().all(|&x| x < 10.0));
         }
         crate::hyp::tests::assert_lorentz(settled.m, 1e-12);
+    }
+
+    /// All 2p triangles of a tile share its color; its neighbors across an edge
+    /// generally do not.
+    #[test]
+    fn color_is_constant_on_tiles() {
+        let t = Tiling::new(7, 3).unwrap();
+        let v = View::new();
+        let colors: Vec<_> = (0..14)
+            .map(|i| sample(&v, &t, DVec2::from_angle((i as f64 + 0.5) * PI / 7.0) * 0.1).2)
+            .collect();
+        assert!(colors.iter().all(|&c| c == t.quotient.v0));
+        let across_edge = sample(&v, &t, DVec2::from_angle(PI / 7.0) * 0.5).2;
+        assert_ne!(across_edge, t.quotient.v0);
     }
 
     #[test]

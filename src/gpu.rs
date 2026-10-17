@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use glam::{DMat3, DVec3};
+use glam::DVec3;
 use winit::{event_loop::OwnedDisplayHandle, window::Window};
 
-use crate::tiling::Tiling;
+use crate::{hyp::lorentz_inv, tiling::Tiling, view::View};
 
 /// Mirrors `struct U` in `tiling.wgsl`. Every member is 16-byte aligned, so
 /// there is no implicit padding.
@@ -16,12 +16,21 @@ pub struct Uniforms {
     pub mirrors: [[f32; 4]; 3],
     pub vert: [f32; 4],
     /// xy = resolution px, z = disk radius px, w = line width px
-    pub view: [f32; 4],
+    pub screen: [f32; 4],
+    /// Rows n_k of the reduced reflections; w unused.
+    pub cox: [[u32; 4]; 3],
+    /// Columns of `View::color_frame`; w unused.
+    pub color_frame: [[u32; 4]; 3],
+    /// xyz = v0, w = ℓ, or 0 for two-tone parity coloring.
+    pub v0: [u32; 4],
 }
 
 impl Uniforms {
-    pub fn new(m_inv: DMat3, tiling: &Tiling, view: [f32; 4]) -> Self {
+    pub fn new(view: &View, tiling: &Tiling, screen: [f32; 4], quotient_colors: bool) -> Self {
         let v4 = |v: DVec3| v.as_vec3().extend(0.0).to_array();
+        let u4 = |[x, y, z]: [u32; 3]| [x, y, z, 0];
+        let quot = &tiling.quotient;
+        let m_inv = lorentz_inv(view.m);
         Self {
             m_inv: [v4(m_inv.x_axis), v4(m_inv.y_axis), v4(m_inv.z_axis)],
             mirrors: tiling.mirrors.map(v4),
@@ -30,7 +39,15 @@ impl Uniforms {
                 .as_vec3()
                 .extend(tiling.half_edge as f32)
                 .to_array(),
-            view,
+            screen,
+            cox: quot.n.map(u4),
+            color_frame: view.color_frame.map(u4),
+            v0: [
+                quot.v0[0],
+                quot.v0[1],
+                quot.v0[2],
+                if quotient_colors { quot.ell } else { 0 },
+            ],
         }
     }
 }

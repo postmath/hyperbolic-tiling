@@ -4,9 +4,9 @@
 
 use std::f64::consts::PI;
 
-use glam::{DMat3, DVec3};
+use glam::DVec3;
 
-use crate::hyp::{lor, reflect};
+use crate::{hyp::lor, quotient::Quotient};
 
 /// Fold sweeps over the three mirrors; must match `MAX_SWEEPS` in tiling.wgsl.
 pub const MAX_SWEEPS: u32 = 64;
@@ -23,6 +23,16 @@ pub struct Tiling {
     pub vert: DVec3,
     /// Half the polygon edge length, |VE|.
     pub half_edge: f64,
+    pub quotient: Quotient,
+}
+
+// `point` and `sweeps` are only read by tests that replay the shader.
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct Fold {
+    pub point: DVec3,
+    /// Mirror indices in the order applied: point = r_last ... r_first x.
+    pub word: Vec<usize>,
+    pub sweeps: u32,
 }
 
 impl Tiling {
@@ -46,6 +56,7 @@ impl Tiling {
             ],
             vert: DVec3::new(cosh_r, (cosh_r * cosh_r - 1.0).sqrt(), 0.0),
             half_edge: (cp / sq).acosh(),
+            quotient: Quotient::first(p, q)?,
         })
     }
 
@@ -67,34 +78,45 @@ impl Tiling {
         }
     }
 
+    /// Steps ℓ for the tile coloring to the next admissible prime in direction `dir`.
+    pub fn with_ell_stepped(&self, dir: i64) -> Option<Self> {
+        let quotient = Quotient::stepped(self.p, self.q, self.quotient.ell, dir)?;
+        Some(Self { quotient, ..*self })
+    }
+
     /// Reflects `x` into the fundamental triangle, exactly as the shader does.
-    /// Returns the folded point, the product F of the reflections applied
-    /// (F x = folded), their count, and the number of sweeps used.
-    pub fn fold(&self, x: DVec3) -> (DVec3, DMat3, u32, u32) {
-        let (mut t, mut f, mut count) = (x, DMat3::IDENTITY, 0);
-        for sweep in 0..MAX_SWEEPS {
+    pub fn fold(&self, x: DVec3) -> Fold {
+        let (mut point, mut word) = (x, vec![]);
+        for sweeps in 0..MAX_SWEEPS {
             let mut changed = false;
-            for n in self.mirrors {
-                let d = lor(t, n);
+            for (k, n) in self.mirrors.into_iter().enumerate() {
+                let d = lor(point, n);
                 if d < 0.0 {
-                    t -= 2.0 * d * n;
-                    f = reflect(n) * f;
-                    count += 1;
+                    point -= 2.0 * d * n;
+                    word.push(k);
                     changed = true;
                 }
             }
             if !changed {
-                return (t, f, count, sweep);
+                return Fold {
+                    point,
+                    word,
+                    sweeps,
+                };
             }
         }
-        (t, f, count, MAX_SWEEPS)
+        Fold {
+            point,
+            word,
+            sweeps: MAX_SWEEPS,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hyp::{ORIGIN, disk_to_hyp, tests::assert_close, translate};
+    use crate::hyp::{ORIGIN, disk_to_hyp, reflect, tests::assert_close, translate};
     use glam::DVec2;
 
     const PAIRS: [(u32, u32); 8] = [
@@ -162,11 +184,13 @@ mod tests {
     fn fold_lands_in_triangle() {
         let t = Tiling::new(7, 3).unwrap();
         let x = disk_to_hyp(DVec2::new(0.6, -0.7));
-        let (y, f, _, sweeps) = t.fold(x);
-        assert!(sweeps < MAX_SWEEPS);
+        let f = t.fold(x);
+        assert!(f.sweeps < MAX_SWEEPS);
+        let y = f.point;
         assert!(t.mirrors.iter().all(|&n| lor(y, n) >= -1e-9));
         assert!((lor(y, y) + 1.0).abs() < 1e-9);
-        assert_close(f * x, y, 1e-9);
+        let replayed = f.word.iter().fold(x, |x, &k| reflect(t.mirrors[k]) * x);
+        assert_close(replayed, y, 1e-9);
     }
 
     /// Worst case of the shader's fold cap over the drawn region rho^2 <= 0.999,
@@ -189,7 +213,7 @@ mod tests {
                 .map(|(m_inv, i, r)| {
                     let a = i as f64 / 4096.0 * 2.0 * PI;
                     let d = rho * r as f64 / 8.0 * DVec2::from_angle(a);
-                    t.fold(m_inv * disk_to_hyp(d)).3
+                    t.fold(m_inv * disk_to_hyp(d)).sweeps
                 })
                 .max()
                 .unwrap();
