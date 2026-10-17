@@ -9,9 +9,9 @@ use glam::DVec2;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalPosition,
-    event::{ElementState, MouseButton, WindowEvent},
+    event::{ElementState, KeyEvent, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
-    keyboard::ModifiersState,
+    keyboard::{KeyCode, ModifiersState, PhysicalKey},
     window::{Window, WindowId},
 };
 
@@ -23,6 +23,10 @@ use view::View;
 /// Gap between the disk and the nearer window edge, px.
 const MARGIN_PX: f32 = 8.0;
 const LINE_WIDTH_PX: f32 = 1.5;
+
+const USAGE: &str = "\
+Drag: pan. Right drag or Shift+drag: rotate.
+P / Shift+P: step p up / down. Q / Shift+Q: step q. R: reset view.";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Drag {
@@ -78,6 +82,31 @@ impl App {
     fn redraw(&self) {
         self.window.as_ref().unwrap().request_redraw();
     }
+
+    fn title(&self) -> String {
+        format!("{{{},{}}} hyperbolic tiling", self.tiling.p, self.tiling.q)
+    }
+
+    fn key(&mut self, code: KeyCode) {
+        let step = if self.modifiers.shift_key() { -1 } else { 1 };
+        match code {
+            KeyCode::KeyP | KeyCode::KeyQ => {
+                let (dp, dq) = if code == KeyCode::KeyP {
+                    (step, 0)
+                } else {
+                    (0, step)
+                };
+                let Some(t) = self.tiling.stepped(dp, dq) else {
+                    return;
+                };
+                self.tiling = t;
+                self.window.as_ref().unwrap().set_title(&self.title());
+            }
+            KeyCode::KeyR => self.view = View::new(),
+            _ => return,
+        }
+        self.redraw();
+    }
 }
 
 impl ApplicationHandler for App {
@@ -87,7 +116,7 @@ impl ApplicationHandler for App {
         }
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes().with_title("Hyperbolic tiling"))
+                .create_window(Window::default_attributes().with_title(self.title()))
                 .expect("create window"),
         );
         self.renderer = Some(Renderer::new(
@@ -112,6 +141,15 @@ impl ApplicationHandler for App {
                 self.renderer.as_mut().unwrap().render(&u);
             }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(code),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => self.key(code),
             WindowEvent::MouseInput { state, button, .. } => {
                 self.drag = match (state, button) {
                     (ElementState::Pressed, MouseButton::Left) if self.modifiers.shift_key() => {
@@ -141,6 +179,7 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
+    println!("{USAGE}");
     let event_loop = EventLoop::new().expect("create event loop");
     event_loop.run_app(&mut App::new()).expect("run event loop");
 }

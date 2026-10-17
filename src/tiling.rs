@@ -49,6 +49,24 @@ impl Tiling {
         })
     }
 
+    /// Steps p by `dp` (or q by `dq`) repeatedly until {p,q} is valid;
+    /// `None` if it leaves 3..=MAX_PQ first.
+    pub fn stepped(&self, dp: i32, dq: i32) -> Option<Self> {
+        let (mut p, mut q) = (self.p as i32, self.q as i32);
+        loop {
+            (p, q) = (p + dp, q + dq);
+            if p < 3 || q < 3 {
+                return None;
+            }
+            if let Some(t) = Self::new(p as u32, q as u32) {
+                return Some(t);
+            }
+            if p as u32 > MAX_PQ || q as u32 > MAX_PQ {
+                return None;
+            }
+        }
+    }
+
     /// Reflects `x` into the fundamental triangle, exactly as the shader does.
     /// Returns the folded point, the product F of the reflections applied
     /// (F x = folded), their count, and the number of sweeps used.
@@ -104,6 +122,17 @@ mod tests {
         ] {
             assert!(Tiling::new(p, q).is_none(), "{{{p},{q}}}");
         }
+    }
+
+    #[test]
+    fn stepping_skips_non_hyperbolic() {
+        let pq = |t: Option<Tiling>| t.map(|t| (t.p, t.q));
+        let t73 = Tiling::new(7, 3).unwrap();
+        assert_eq!(pq(t73.stepped(1, 0)), Some((8, 3)));
+        assert_eq!(pq(t73.stepped(-1, 0)), None);
+        assert_eq!(pq(Tiling::new(4, 5).unwrap().stepped(0, -1)), None);
+        assert_eq!(pq(Tiling::new(3, 8).unwrap().stepped(0, -1)), Some((3, 7)));
+        assert_eq!(pq(Tiling::new(32, 3).unwrap().stepped(1, 0)), None);
     }
 
     #[test]
