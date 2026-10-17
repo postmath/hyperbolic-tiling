@@ -1,4 +1,6 @@
 mod gpu;
+mod hyp;
+mod tiling;
 
 use std::sync::Arc;
 
@@ -9,25 +11,30 @@ use winit::{
     window::{Window, WindowId},
 };
 
+use glam::DMat3;
+
 use gpu::{Renderer, Uniforms};
+use hyp::lorentz_inv;
+use tiling::Tiling;
 
 /// Gap between the disk and the nearer window edge, px.
 const MARGIN_PX: f32 = 8.0;
 const LINE_WIDTH_PX: f32 = 1.5;
 
-#[derive(Default)]
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    tiling: Tiling,
+    /// Tiling frame -> screen frame.
+    m: DMat3,
 }
 
 impl App {
     fn uniforms(&self) -> Uniforms {
         let (w, h) = self.renderer.as_ref().unwrap().size();
         let (w, h) = (w as f32, h as f32);
-        Uniforms {
-            view: [w, h, (0.5 * w.min(h) - MARGIN_PX).max(1.0), LINE_WIDTH_PX],
-        }
+        let view = [w, h, (0.5 * w.min(h) - MARGIN_PX).max(1.0), LINE_WIDTH_PX];
+        Uniforms::new(lorentz_inv(self.m), &self.tiling, view)
     }
 }
 
@@ -69,7 +76,11 @@ impl ApplicationHandler for App {
 
 fn main() {
     let event_loop = EventLoop::new().expect("create event loop");
-    event_loop
-        .run_app(&mut App::default())
-        .expect("run event loop");
+    let mut app = App {
+        window: None,
+        renderer: None,
+        tiling: Tiling::new(7, 3).unwrap(),
+        m: DMat3::IDENTITY,
+    };
+    event_loop.run_app(&mut app).expect("run event loop");
 }

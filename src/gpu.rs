@@ -1,15 +1,38 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
+use glam::{DMat3, DVec3};
 use winit::{event_loop::OwnedDisplayHandle, window::Window};
+
+use crate::tiling::Tiling;
 
 /// Mirrors `struct U` in `tiling.wgsl`. Every member is 16-byte aligned, so
 /// there is no implicit padding.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct Uniforms {
+    /// Columns, each padded to vec4.
+    pub m_inv: [[f32; 4]; 3],
+    pub mirrors: [[f32; 4]; 3],
+    pub vert: [f32; 4],
     /// xy = resolution px, z = disk radius px, w = line width px
     pub view: [f32; 4],
+}
+
+impl Uniforms {
+    pub fn new(m_inv: DMat3, tiling: &Tiling, view: [f32; 4]) -> Self {
+        let v4 = |v: DVec3| v.as_vec3().extend(0.0).to_array();
+        Self {
+            m_inv: [v4(m_inv.x_axis), v4(m_inv.y_axis), v4(m_inv.z_axis)],
+            mirrors: tiling.mirrors.map(v4),
+            vert: tiling
+                .vert
+                .as_vec3()
+                .extend(tiling.half_edge as f32)
+                .to_array(),
+            view,
+        }
+    }
 }
 
 pub struct Renderer {
@@ -163,5 +186,29 @@ impl Renderer {
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shader_validates_and_matches_uniform_layout() {
+        let module = naga::front::wgsl::parse_str(include_str!("tiling.wgsl")).unwrap();
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .unwrap();
+        let mut layouter = naga::proc::Layouter::default();
+        layouter.update(module.to_ctx()).unwrap();
+        let (handle, _) = module
+            .types
+            .iter()
+            .find(|(_, t)| t.name.as_deref() == Some("U"))
+            .unwrap();
+        assert_eq!(layouter[handle].size as usize, size_of::<Uniforms>());
     }
 }
