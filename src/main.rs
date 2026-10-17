@@ -100,6 +100,7 @@ impl App {
                     return;
                 };
                 self.tiling = t;
+                self.view.settle(&self.tiling);
                 self.window.as_ref().unwrap().set_title(&self.title());
             }
             KeyCode::KeyR => self.view = View::new(),
@@ -168,6 +169,7 @@ impl ApplicationHandler for App {
                         Drag::Pan => self.view.pan(from, to),
                         Drag::Rotate => self.view.rotate(from, to),
                     }
+                    self.view.settle(&self.tiling);
                     self.redraw();
                 }
                 self.cursor = Some(position);

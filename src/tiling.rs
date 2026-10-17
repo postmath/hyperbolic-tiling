@@ -94,7 +94,7 @@ impl Tiling {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hyp::{disk_to_hyp, tests::assert_close};
+    use crate::hyp::{ORIGIN, disk_to_hyp, tests::assert_close, translate};
     use glam::DVec2;
 
     const PAIRS: [(u32, u32); 8] = [
@@ -169,18 +169,27 @@ mod tests {
         assert_close(f * x, y, 1e-9);
     }
 
-    /// Worst case of the shader's fold cap over the drawn region rho^2 <= 0.999.
+    /// Worst case of the shader's fold cap over the drawn region rho^2 <= 0.999,
+    /// with the view centered on each corner of the fundamental triangle (where
+    /// `View::settle` keeps it).
     #[test]
     fn fold_converges_within_cap_at_rim() {
         let rho = 0.999f64.sqrt();
         for (p, q) in PAIRS {
             let t = Tiling::new(p, q).unwrap();
-            let worst = (0..4096)
-                .flat_map(|i| (1..=8).map(move |r| (i, r)))
-                .map(|(i, r)| {
+            let [_, b, c] = t.mirrors.map(|n| DVec3::new(-n.x, n.y, n.z));
+            let e = b.cross(c);
+            let e = e / (-lor(e, e)).sqrt() * e.x.signum();
+            let worst = [ORIGIN, t.vert, e]
+                .into_iter()
+                .flat_map(|center| {
+                    let m_inv = translate(ORIGIN, center);
+                    (0..4096).flat_map(move |i| (1..=8).map(move |r| (m_inv, i, r)))
+                })
+                .map(|(m_inv, i, r)| {
                     let a = i as f64 / 4096.0 * 2.0 * PI;
                     let d = rho * r as f64 / 8.0 * DVec2::from_angle(a);
-                    t.fold(disk_to_hyp(d)).3
+                    t.fold(m_inv * disk_to_hyp(d)).3
                 })
                 .max()
                 .unwrap();

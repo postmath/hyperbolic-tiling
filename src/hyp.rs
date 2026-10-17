@@ -3,6 +3,8 @@
 
 use glam::{DMat3, DVec2, DVec3};
 
+pub const ORIGIN: DVec3 = DVec3::X;
+
 pub fn lor(a: DVec3, b: DVec3) -> f64 {
     -a.x * b.x + a.y * b.y + a.z * b.z
 }
@@ -32,6 +34,7 @@ pub fn disk_to_hyp(d: DVec2) -> DVec3 {
     DVec3::new(1.0 + r2, 2.0 * d.x, 2.0 * d.y) / (1.0 - r2)
 }
 
+#[cfg(test)]
 pub fn hyp_to_disk(x: DVec3) -> DVec2 {
     DVec2::new(x.y, x.z) / (1.0 + x.x)
 }
@@ -52,6 +55,17 @@ pub fn translate(p: DVec3, q: DVec3) -> DMat3 {
 pub fn rotate(a: f64) -> DMat3 {
     let (s, c) = a.sin_cos();
     DMat3::from_cols(DVec3::X, DVec3::new(0.0, c, s), DVec3::new(0.0, -s, c))
+}
+
+/// Lorentzian Gram-Schmidt on the columns of an approximately Lorentz matrix.
+pub fn orthonormalize(m: DMat3) -> DMat3 {
+    let mut c0 = m.x_axis;
+    c0 /= (-lor(c0, c0)).sqrt();
+    let mut c1 = m.y_axis + lor(m.y_axis, c0) * c0;
+    c1 /= lor(c1, c1).sqrt();
+    let mut c2 = m.z_axis + lor(m.z_axis, c0) * c0 - lor(m.z_axis, c1) * c1;
+    c2 /= lor(c2, c2).sqrt();
+    DMat3::from_cols(c0, c1, c2)
 }
 
 #[cfg(test)]
@@ -110,6 +124,17 @@ mod motion_tests {
         // Pure translation: no rotation about p or q, so going back undoes it.
         assert_mat_close(translate(q, p) * t, DMat3::IDENTITY, 1e-9);
         assert_mat_close(translate(p, p), DMat3::IDENTITY, 0.0);
+    }
+
+    #[test]
+    fn orthonormalize_repairs_drift() {
+        let m = translate(ORIGIN, disk_to_hyp(DVec2::new(0.3, 0.4))) * rotate(1.0);
+        let noisy =
+            m + DMat3::from_cols_array(&[1e-6, -2e-6, 3e-6, 0.0, 1e-6, 0.0, -1e-6, 0.0, 2e-6]);
+        let fixed = orthonormalize(noisy);
+        assert_lorentz(fixed, 1e-12);
+        assert_mat_close(fixed, m, 1e-5);
+        assert_mat_close(orthonormalize(m), m, 1e-12);
     }
 
     #[test]
