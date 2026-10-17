@@ -36,12 +36,30 @@ pub fn hyp_to_disk(x: DVec3) -> DVec2 {
     DVec2::new(x.y, x.z) / (1.0 + x.x)
 }
 
+/// Translation carrying p to q along their geodesic: reflect in the line
+/// through p perpendicular to the geodesic, then in the perpendicular bisector.
+pub fn translate(p: DVec3, q: DVec3) -> DMat3 {
+    let c = -lor(p, q); // cosh d
+    if c < 1.0 + 1e-12 {
+        return DMat3::IDENTITY;
+    }
+    let n1 = (q - c * p) / (c * c - 1.0).sqrt(); // unit tangent at p toward q
+    let n2 = (q - p) / (2.0 * (c - 1.0)).sqrt(); // unit normal of the bisector
+    reflect(n2) * reflect(n1)
+}
+
+/// Rotation about the origin by `a`, counterclockwise.
+pub fn rotate(a: f64) -> DMat3 {
+    let (s, c) = a.sin_cos();
+    DMat3::from_cols(DVec3::X, DVec3::new(0.0, c, s), DVec3::new(0.0, -s, c))
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
 
     pub fn assert_close(a: DVec3, b: DVec3, tol: f64) {
-        assert!((a - b).abs().max_element() < tol, "{a} != {b}");
+        assert!((a - b).abs().max_element() <= tol, "{a} != {b}");
     }
 
     pub fn assert_mat_close(a: DMat3, b: DMat3, tol: f64) {
@@ -73,5 +91,32 @@ pub(crate) mod tests {
         assert_mat_close(r * r, DMat3::IDENTITY, 1e-12);
         assert_close(r * n, -n, 1e-12);
         assert_mat_close(lorentz_inv(r) * r, DMat3::IDENTITY, 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use super::tests::*;
+    use super::*;
+
+    #[test]
+    fn translate_carries_p_to_q() {
+        let p = disk_to_hyp(DVec2::new(0.2, -0.4));
+        let q = disk_to_hyp(DVec2::new(-0.6, 0.1));
+        let t = translate(p, q);
+        assert_close(t * p, q, 1e-9);
+        assert_lorentz(t, 1e-9);
+        assert_mat_close(lorentz_inv(t) * t, DMat3::IDENTITY, 1e-9);
+        // Pure translation: no rotation about p or q, so going back undoes it.
+        assert_mat_close(translate(q, p) * t, DMat3::IDENTITY, 1e-9);
+        assert_mat_close(translate(p, p), DMat3::IDENTITY, 0.0);
+    }
+
+    #[test]
+    fn rotation_is_ccw_in_disk() {
+        let r = rotate(std::f64::consts::FRAC_PI_2);
+        assert_lorentz(r, 1e-12);
+        let d = hyp_to_disk(r * disk_to_hyp(DVec2::new(0.5, 0.0)));
+        assert!((d - DVec2::new(0.0, 0.5)).length() < 1e-12);
     }
 }

@@ -52,7 +52,6 @@ impl Tiling {
     /// Reflects `x` into the fundamental triangle, exactly as the shader does.
     /// Returns the folded point, the product F of the reflections applied
     /// (F x = folded), their count, and the number of sweeps used.
-    #[cfg(test)]
     pub fn fold(&self, x: DVec3) -> (DVec3, DMat3, u32, u32) {
         let (mut t, mut f, mut count) = (x, DMat3::IDENTITY, 0);
         for sweep in 0..MAX_SWEEPS {
