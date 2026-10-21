@@ -12,7 +12,7 @@ use crate::{
     tiling::{Geometry, MAX_PQ, Tiling},
 };
 
-pub const USAGE: &str = "\
+const USAGE: &str = "\
 Drag: pan. Right drag or Shift+drag: rotate. R: reset view.
 P / Shift+P: step p up / down. Q / Shift+Q: step q.
 L / Shift+L: step the prime ℓ for tile colors. C: toggle tile colors / two-tone.

@@ -259,7 +259,6 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
-    println!("{}", ui::USAGE);
     let event_loop = EventLoop::new().expect("create event loop");
     event_loop.run_app(&mut App::new()).expect("run event loop");
 }
