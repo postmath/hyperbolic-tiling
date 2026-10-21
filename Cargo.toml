@@ -10,9 +10,18 @@ egui = { version = "=0.37.0", features = ["default_fonts"] }
 egui-wgpu = { version = "=0.37.0", default-features = false }
 egui-winit = { version = "=0.37.0", default-features = false, features = ["wayland", "x11"] }
 glam = "=0.34.1"
-pollster = "=1.0.1"
+web-time = "=1.1.0"
 wgpu = "=30.0.1"
 winit = "=0.30.13"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "=1.0.1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "=0.1.7"
+wasm-bindgen-futures = "=0.4.79"
+# WebGL2 as a fallback where the browser lacks WebGPU.
+wgpu = { version = "=30.0.1", features = ["webgl"] }
 
 [dev-dependencies]
 naga = { version = "=30.0.1", features = ["wgsl-in"] }

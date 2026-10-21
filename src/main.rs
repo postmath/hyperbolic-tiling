@@ -5,10 +5,7 @@ mod tiling;
 mod ui;
 mod view;
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Duration};
 
 use glam::DVec2;
 use winit::{
@@ -24,6 +21,8 @@ use gpu::{Renderer, Uniforms};
 use tiling::Tiling;
 use ui::{Action, Gui, Settings};
 use view::View;
+// std's Instant panics in the browser.
+use web_time::Instant;
 
 /// Gap between the disk and the nearer window edge, px.
 const MARGIN_PX: f32 = 8.0;
@@ -40,7 +39,7 @@ enum Gfx {
     None,
     /// Waiting for the renderer, which arrives as a user event.
     Pending(Arc<Window>),
-    Ready(Ready),
+    Ready(Box<Ready>),
 }
 
 struct Ready {
@@ -236,18 +235,21 @@ impl ApplicationHandler<Renderer> for App {
         if !matches!(self.gfx, Gfx::None) {
             return;
         }
-        let window = Arc::new(
-            event_loop
-                .create_window(Window::default_attributes().with_title(self.model.title()))
-                .expect("create window"),
-        );
+        let attrs = Window::default_attributes().with_title(self.model.title());
+        #[cfg(target_arch = "wasm32")]
+        let attrs = winit::platform::web::WindowAttributesExtWebSys::with_append(attrs, true);
+        let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         let renderer = Renderer::new(window.clone(), event_loop.owned_display_handle());
         let proxy = self.proxy.clone();
         let send = async move {
             // Fails only if the event loop has already exited.
             let _ = proxy.send_event(renderer.await);
         };
+        // The browser can't block, so there the renderer arrives later.
+        #[cfg(not(target_arch = "wasm32"))]
         pollster::block_on(send);
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_futures::spawn_local(send);
         self.gfx = Gfx::Pending(window);
     }
 
@@ -261,11 +263,11 @@ impl ApplicationHandler<Renderer> for App {
         renderer.resize(size.width, size.height);
         let gui = Gui::new(&window, event_loop, renderer.max_texture_side());
         window.request_redraw();
-        self.gfx = Gfx::Ready(Ready {
+        self.gfx = Gfx::Ready(Box::new(Ready {
             window,
             renderer,
             gui,
-        });
+        }));
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
@@ -293,13 +295,22 @@ impl ApplicationHandler<Renderer> for App {
 }
 
 fn main() {
+    #[cfg(target_arch = "wasm32")]
+    console_error_panic_hook::set_once();
     let event_loop = EventLoop::with_user_event()
         .build()
         .expect("create event loop");
-    let mut app = App {
+    let app = App {
         proxy: event_loop.create_proxy(),
         gfx: Gfx::None,
         model: Model::new(),
     };
-    event_loop.run_app(&mut app).expect("run event loop");
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut app = app;
+        event_loop.run_app(&mut app).expect("run event loop");
+    }
+    // Returns at once; the browser drives the loop.
+    #[cfg(target_arch = "wasm32")]
+    winit::platform::web::EventLoopExtWebSys::spawn_app(event_loop, app);
 }

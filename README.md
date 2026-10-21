@@ -18,6 +18,19 @@ cargo run --release
 It needs a GPU with Vulkan, Metal, DX12 or GL. Set `WGPU_BACKEND=gl` (for
 example) to force a backend.
 
+### In a browser
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install trunk --locked
+trunk serve --open
+```
+
+`trunk build --release` writes a static site to `dist/`, about 2.6 MB
+gzipped, which any static file host can serve. It uses WebGPU where the
+browser provides it and falls back to WebGL2 otherwise. Tested in Chrome on
+both paths.
+
 ## Controls
 
 A panel at the top left holds the main controls:

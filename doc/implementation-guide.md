@@ -22,6 +22,7 @@ src/tiling.rs    a {p,q} tiling: mirrors, vertex V, the CPU fold
 src/view.rs      the view matrix M, pan/rotate, settling (rebasing)
 src/quotient.rs  finite quotient mod ℓ for stable tile colors
 src/ui.rs        the egui control panel and the {p,q} lattice picker
+index.html       the page trunk builds for the web version (§8)
 ```
 
 What happens per input event and per frame:
@@ -220,7 +221,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §9.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §10.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -719,7 +720,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§8) that is acceptable.
+thousand ALU operations per pixel (§9) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -790,7 +791,91 @@ correctly not selectable.
 
 ---
 
-## 8. Precision and performance notes
+## 8. Milestone 8: in the browser
+
+Commits: *Hand the renderer to the app as a user event*, then *Run in the
+browser via WebGPU or WebGL2*.
+
+### 8.1 What changes on the web
+
+Almost nothing in the math, the shader or the panel. The differences are all
+at the edges:
+
+* **No blocking.** The browser's main thread cannot wait, so
+  `pollster::block_on` is out. `Renderer::new` became an `async fn`. On
+  native, `resumed` still blocks on it; on the web it runs under
+  `wasm_bindgen_futures::spawn_local`. Either way the result reaches the app
+  as a winit *user event*: `App` implements `ApplicationHandler<Renderer>`,
+  and `user_event` completes the setup. The first commit made this change on
+  native alone, so the restructuring could be tested before any web code
+  existed. Window events that arrive before the renderer are dropped, and
+  `user_event` catches up on the window size it may have missed.
+* **Starting the loop.** `EventLoopExtWebSys::spawn_app` replaces `run_app`.
+  It returns at once, and the browser drives the loop from then on.
+  `WindowAttributesExtWebSys::with_append(true)` adds the canvas to the
+  page, and `index.html` sizes it with CSS.
+* **Time.** `std::time::Instant::now` panics on `wasm32-unknown-unknown`, so
+  `main.rs` uses `web_time::Instant`, which is `std`'s on native.
+* **Panics** go to the browser console through `console_error_panic_hook`.
+  Without it, a panic shows only as `RuntimeError: unreachable`.
+
+The `#[cfg(target_arch = "wasm32")]` points are few: starting the loop, the
+renderer hand-off, the canvas attribute and the panic hook. They are all in
+`main.rs`. Target-specific dependencies in `Cargo.toml` keep `pollster`
+native-only and the web crates web-only.
+
+### 8.2 WebGPU or WebGL2
+
+wgpu's `webgpu` feature is on by default; the `webgl` feature adds WebGL2 as
+a fallback. Which one to use has to be decided when the instance is created,
+and a browser can expose `navigator.gpu` without being able to provide an
+adapter. Chrome on Linux does exactly that unless flags enable WebGPU.
+`wgpu::util::new_instance_with_webgpu_detection` tries for an adapter first
+and drops WebGPU if that fails. On native it simply creates the instance,
+so `Renderer::new` calls it unconditionally.
+
+The first WebGL2 run failed in `request_device`. The default `Limits`
+assume compute shaders, which WebGL2 lacks (`max_compute_workgroups_per_dimension`
+of 0). This app uses no compute, so it requests
+`Limits::downlevel_webgl2_defaults()`, raised by `using_resolution` to the
+adapter's texture and surface sizes. Those still decide `max_texture_side`
+for egui.
+
+One worry turned out to be unfounded. §1.3 picks the surface format with
+`remove_srgb_suffix()`, which assumes the non-sRGB variant is supported. On
+WebGL2, wgpu lists `Rgba8Unorm` first; on WebGPU the preferred canvas format
+is `bgra8unorm`. Neither is sRGB, so the call is a no-op on both.
+
+### 8.3 Testing it
+
+* **Headless Chrome** runs the WebGL2 path through SwiftShader:
+  `google-chrome --headless=new --use-angle=swiftshader --enable-unsafe-swiftshader
+  --virtual-time-budget=15000 --enable-logging=stderr --screenshot=... URL`.
+  `--enable-logging=stderr` prints the page's console messages, which is
+  how the limits error above showed up.
+* **WebGPU** never got an adapter in headless Chrome, whatever the flags. A
+  normal Chrome window with `--enable-unsafe-webgpu --enable-features=Vulkan`
+  got the real GPU. A five-line probe page that logs whether
+  `navigator.gpu.requestAdapter()` succeeds settles such questions faster
+  than the app itself.
+* **Colors.** Screenshots of a normal Chrome window had more saturated
+  colors than headless Chrome and the native app, which agreed to the byte.
+  WebGL2 in a normal window looked the same as WebGPU, so the cause is
+  Chrome's color management for the monitor, not the backend.
+* The XTest driver from §3.5 works on a browser window too: key presses,
+  pans, lattice clicks and right-drag rotation all behave as on native.
+  winit cancels the context menu by default (`with_prevent_default`).
+
+### 8.4 Size
+
+The release `.wasm` is 6.5 MB, 2.6 MB gzipped. `wasm-opt -Oz`
+(`data-wasm-opt="z"` in `index.html`) saved under 2%, so it is not enabled.
+Most of the weight is wgpu-core and naga, which the WebGL2 path needs
+because there the browser offers no WebGPU implementation to delegate to.
+
+---
+
+## 9. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -807,9 +892,9 @@ correctly not selectable.
 
 ---
 
-## 9. Workflow notes
+## 10. Workflow notes
 
-### 9.1 jj
+### 10.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -828,13 +913,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 9.2 Checks before each commit
+### 10.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 9.3 A throwaway verification build
+### 10.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -844,7 +929,7 @@ snapshot into a commit.
 
 ---
 
-## 10. Exercises and extensions
+## 11. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.
@@ -856,8 +941,9 @@ snapshot into a commit.
    angle to use when the pointer starts on the pivot.
 4. **Zoom.** Isometries cannot zoom. Instead change the disk radius in pixels
    beyond the window (`screen.z`), or switch to the upper half-plane model.
-5. **WebGPU in the browser.** wgpu and winit both support `wasm32`. What
-   changes in `resumed` and in surface creation?
+5. **A smaller web build.** Find where the 6.5 MB of wasm goes, for example
+   with `twiggy top`. Then try `lto = true` and `opt-level = "s"` in a
+   release profile, and a WebGPU-only build without the `webgl` feature.
 6. **Proper colorings.** Implement the $\mathbb Z/2$ tile coloring for even $q$
    (math exercise 5.1) as another homomorphism, alongside the mod-ℓ one.
 7. **Timestamp queries.** Measure the fragment cost per frame with

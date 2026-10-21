@@ -79,9 +79,11 @@ pub struct Renderer {
 
 impl Renderer {
     pub async fn new(window: Arc<Window>, display: OwnedDisplayHandle) -> Self {
-        let instance = wgpu::Instance::new(
+        // In a browser, falls back to WebGL2 if WebGPU is missing.
+        let instance = wgpu::util::new_instance_with_webgpu_detection(
             wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(display)),
-        );
+        )
+        .await;
         let size = window.inner_size();
         let surface = instance.create_surface(window).expect("create surface");
         let adapter = instance
@@ -92,7 +94,13 @@ impl Renderer {
             .await
             .expect("no suitable GPU adapter");
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&wgpu::DeviceDescriptor {
+                // The default limits assume compute shaders, which WebGL2 lacks
+                // and this app does not use.
+                required_limits: wgpu::Limits::downlevel_webgl2_defaults()
+                    .using_resolution(adapter.limits()),
+                ..Default::default()
+            })
             .await
             .expect("request device");
 
