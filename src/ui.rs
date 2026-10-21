@@ -60,6 +60,8 @@ pub struct Gui {
 impl Gui {
     pub fn new(window: &Window, display: &dyn HasDisplayHandle, max_texture_side: usize) -> Self {
         let ctx = egui::Context::default();
+        // The page behind the panel is dark whatever the system prefers.
+        ctx.set_theme(egui::Theme::Dark);
         let state = egui_winit::State::new(
             ctx.clone(),
             egui::ViewportId::ROOT,
