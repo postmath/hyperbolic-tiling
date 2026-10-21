@@ -186,6 +186,11 @@ queue.present(frame);
   report `Suboptimal` (still usable; reconfigure afterwards), or
   `Outdated`/`Lost` (reconfigure and skip this frame, typically after a
   resize). It can also report `Timeout` or `Occluded`, where we just skip.
+  "Afterwards" means after `present`: wgpu rejects `configure` while a frame
+  is held. The first version reconfigured right away. That went unnoticed
+  until rapid resizes produced a `Suboptimal` frame and the app aborted; the
+  commit *Reconfigure a suboptimal surface after presenting, not before*
+  fixed it.
 * `write_buffer` is queued and happens before the submitted commands, so
   writing uniforms right before `submit` is correct, not a race.
 * The render pass borrows the encoder mutably, hence the inner block.

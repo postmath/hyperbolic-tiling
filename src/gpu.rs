@@ -203,13 +203,11 @@ impl Renderer {
     }
 
     fn draw(&mut self, uniforms: &Uniforms, overlay: &Overlay) {
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f) => f,
-            wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
-                // Present this one; the next frame uses a fresh configuration.
-                self.surface.configure(&self.device, &self.config);
-                f
-            }
+        // A suboptimal frame is still presented. Reconfiguring must wait until
+        // it is, because wgpu forbids it while a frame is held.
+        let (frame, suboptimal) = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(f) => (f, false),
+            wgpu::CurrentSurfaceTexture::Suboptimal(f) => (f, true),
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
                 return;
@@ -254,6 +252,9 @@ impl Renderer {
         self.queue
             .submit(egui_cmds.into_iter().chain([encoder.finish()]));
         self.queue.present(frame);
+        if suboptimal {
+            self.surface.configure(&self.device, &self.config);
+        }
     }
 }
 
