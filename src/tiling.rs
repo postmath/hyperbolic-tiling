@@ -14,6 +14,24 @@ pub const MAX_SWEEPS: u32 = 64;
 /// (about 35 at 32); see `fold_converges_within_cap_at_rim`.
 pub const MAX_PQ: u32 = 32;
 
+/// The geometry a {p,q} tiling lives in, for p, q >= 3.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Geometry {
+    Spherical,
+    Euclidean,
+    Hyperbolic,
+}
+
+impl Geometry {
+    pub fn of(p: u32, q: u32) -> Self {
+        match ((p - 2) * (q - 2)).cmp(&4) {
+            std::cmp::Ordering::Less => Self::Spherical,
+            std::cmp::Ordering::Equal => Self::Euclidean,
+            std::cmp::Ordering::Greater => Self::Hyperbolic,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Tiling {
     pub p: u32,
@@ -36,9 +54,12 @@ pub struct Fold {
 }
 
 impl Tiling {
-    /// `None` unless {p,q} is hyperbolic, i.e. (p-2)(q-2) > 4, and p, q <= MAX_PQ.
+    /// `None` unless {p,q} is hyperbolic and p, q <= MAX_PQ.
     pub fn new(p: u32, q: u32) -> Option<Self> {
-        if !(3..=MAX_PQ).contains(&p) || !(3..=MAX_PQ).contains(&q) || (p - 2) * (q - 2) <= 4 {
+        if !(3..=MAX_PQ).contains(&p)
+            || !(3..=MAX_PQ).contains(&q)
+            || Geometry::of(p, q) != Geometry::Hyperbolic
+        {
             return None;
         }
         let (sp, cp) = (PI / p as f64).sin_cos();
@@ -144,6 +165,21 @@ mod tests {
         ] {
             assert!(Tiling::new(p, q).is_none(), "{{{p},{q}}}");
         }
+    }
+
+    #[test]
+    fn geometry_classifies_the_small_cases() {
+        let all = |g| {
+            (3..=MAX_PQ)
+                .flat_map(|p| (3..=MAX_PQ).map(move |q| (p, q)))
+                .filter(|&(p, q)| Geometry::of(p, q) == g)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            all(Geometry::Spherical),
+            [(3, 3), (3, 4), (3, 5), (4, 3), (5, 3)]
+        );
+        assert_eq!(all(Geometry::Euclidean), [(3, 6), (4, 4), (6, 3)]);
     }
 
     #[test]

@@ -21,18 +21,21 @@ src/hyp.rs       hyperboloid-model math in f64: Lorentz form, reflections,
 src/tiling.rs    a {p,q} tiling: mirrors, vertex V, the CPU fold
 src/view.rs      the view matrix M, pan/rotate, settling (rebasing)
 src/quotient.rs  finite quotient mod ℓ for stable tile colors
+src/ui.rs        the egui control panel and the {p,q} lattice picker
 ```
 
 What happens per input event and per frame:
 
-1. winit delivers a `WindowEvent`. Mouse motion during a drag updates
-   `View::m` in f64, then `View::settle` rebases it. Key presses may replace
-   the `Tiling`.
+1. winit delivers a `WindowEvent`. egui sees it first and may claim it
+   (§7.3). Mouse motion during a drag updates `View::m` in f64, then
+   `View::settle` rebases it. Key presses may replace the `Tiling`.
 2. The handler calls `window.request_redraw()`. Nothing renders
    continuously; the app is idle unless something changes.
-3. On `RedrawRequested`, `App::uniforms` packs the state into a 240-byte
+3. On `RedrawRequested`, `App::paint` lays out the egui panel and applies
+   any change made there. `App::uniforms` packs the state into a 256-byte
    `Uniforms` value: $M^{-1}$ and the mirrors as f32, color data as u32.
-   `Renderer::render` uploads it and draws one fullscreen triangle.
+   `Renderer::render` uploads it, draws one fullscreen triangle, and draws
+   the panel on top.
 4. For every pixel the fragment shader maps the pixel to the disk, then to
    the hyperboloid, then through $M^{-1}$ into the tiling frame. It folds the
    point into the fundamental triangle and shades it.
@@ -212,7 +215,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §8.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §9.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -615,7 +618,163 @@ settles.
 
 ---
 
-## 7. Precision and performance notes
+## 7. Milestone 7: the egui control panel
+
+Commit: *Add egui control panel with {p,q} lattice picker.*
+
+### 7.1 Crates and features
+
+| crate | version | role |
+|---|---|---|
+| `egui` | 0.37.0 | immediate-mode GUI: layout, widgets, tessellation |
+| `egui-winit` | 0.37.0 | winit events to egui input; cursor icon and other platform output |
+| `egui-wgpu` | 0.37.0 | draws egui's triangles with wgpu |
+
+egui was chosen over iced and Dear ImGui because it draws *into* an existing
+render pass, so `App` and `Renderer` keep their shape. It was also the only
+option whose current release matched the pinned wgpu 30 and winit 0.30.13;
+iced 0.14 is on wgpu 27 and `imgui-wgpu` 0.28 on wgpu 29.
+
+The default features pull in far more than a panel needs, so they are trimmed:
+
+* `egui` gets `default_fonts`. Without it no text renders at all.
+* `egui-winit` has its defaults off and keeps `x11` and `wayland`. That drops
+  clipboard support, which brought image decoders along, and link opening.
+* `egui-wgpu` has its defaults off; our own `wgpu` dependency already enables
+  wgpu's defaults. Cargo does not let you write `winit/default` in a
+  dependency's feature list, which is why the features are spelled out on
+  each crate.
+
+The default fonts cover less of Unicode than you might expect: ℓ and ≤ are
+there, but ●, arrows and ◀ ▶ are not. A throwaway program checked this with
+`ctx.fonts_mut(|f| f.has_glyph(&font, c))`. That is why the ℓ stepper uses
+`-` and `+`, and why the legend dots are painted rather than typed.
+
+### 7.2 Structure
+
+* `ui::Gui` owns the `egui::Context` and the `egui_winit::State`.
+  `Gui::run` lays out the panel for one frame.
+* `ui::Settings` is the state the panel edits in place: quotient colors, line
+  width, vertex radius, panel visibility. `ui::Action` is the state it may
+  not touch directly, because `App` has to apply it: a new `Tiling` (through
+  `App::set_tiling` and its side effects) or a view reset. So the UI code
+  never sees `View` or `Renderer`.
+* `gpu::Renderer` owns the `egui_wgpu::Renderer` and receives an `Overlay`:
+  tessellated primitives, the texture changes, and the scale factor. egui is
+  drawn in the same render pass, after the fullscreen triangle.
+  `egui_wgpu::Renderer::render` wants a `RenderPass<'static>`, hence
+  `pass.forget_lifetime()`.
+* The uniforms gained a `style` vec4 (line width and vertex radius in px), so
+  `Uniforms` is now 256 bytes. The line width moved out of `screen.w`. Both
+  sides changed together, and the layout test of §2.1 confirmed they still
+  agree.
+* egui-wgpu prefers a gamma-space target such as `Bgra8Unorm`, which is what
+  §1.3 already chose for the tiling. With an sRGB surface, egui would switch
+  to another fragment entry point; here nothing needed adjusting.
+
+### 7.3 Events: who gets what
+
+Every event first goes to `Gui::on_window_event`, which returns `consumed`
+and `repaint`. `consumed` is egui's opinion; the app decides per event what
+to do with it:
+
+* **Button press:** start a drag only if egui did not consume it, that is,
+  if the pointer is not over the panel.
+* **Button release:** always end the drag. Otherwise a drag that ends over
+  the panel would stick.
+* **Cursor motion:** always update `App::cursor`, so that a drag started
+  after using a slider does not jump from a stale position.
+* **Keys:** egui consumes them only when it wants keyboard input, for example
+  a focused text field. The panel has none, so P, Q, L, C, R and H keep
+  working after clicking a button. That was checked, because a focused button
+  could plausibly have swallowed them.
+* **`RedrawRequested`** never reaches egui; see §7.5.
+
+### 7.4 One frame
+
+`App::paint` runs the egui pass, applies the returned action, then builds the
+uniforms and renders. The panel was laid out before the action took effect,
+so an action requests one more frame to show the new state.
+
+egui says when it wants the next frame through `repaint_delay`: zero during
+an animation, a fraction of a second before a tooltip appears, and
+`Duration::MAX` when idle. `App::repaint_at` stores the deadline, and
+`about_to_wait` turns it into `ControlFlow::WaitUntil`. So the app is still
+idle when nothing changes; 5 seconds of idling, with or without a tooltip
+showing, measured 0 CPU ticks. What did change is that every pointer motion
+now redraws, because egui needs a pass to update hover states. At a few
+thousand ALU operations per pixel (§8) that is acceptable.
+
+### 7.5 Three surprises
+
+1. **A repaint loop.** The first version used 23% CPU while idle. Logging
+   every event for which egui asked to repaint showed hundreds of
+   `RedrawRequested`: egui-winit returns `repaint: true` for the redraw
+   event itself, so each frame requested the next. eframe, egui's own
+   framework, does not pass that event to egui either.
+2. **`TexturesDelta` panics on drop** (a `debug_assert`) unless its entries
+   were applied, which the glyph-checking program ran into first. So
+   `Renderer::render` takes the `Overlay` by value and drains it. The texture
+   updates are applied even when the frame is skipped (outdated surface),
+   because egui sends each one only once; losing the font atlas would leave
+   the panel without text.
+3. **Two passes, one input.** `Context::run_pass` may run the UI closure
+   twice in one frame, when a widget calls `request_discard` to hide a sizing
+   glitch. The second pass gets empty input (`new_input.take()` in
+   `Context::run_dyn`), so a click seen in the first pass is not seen again,
+   and a plain `action = panel(...)` would drop it. Hence
+   `panel(...).or(action.take())`.
+
+### 7.6 The {p,q} lattice
+
+Every $(p,q)$ with $3\le p,q\le32$ is a dot. The dot color says whether the
+tiling is spherical, Euclidean or hyperbolic (`tiling::Geometry`, from the
+sign of $(p-2)(q-2)-4$). Only five pairs are spherical and three Euclidean,
+all near the corner, so the axes need to stretch the small values. Here is
+the spacing on the 252-point plot (the 280-point widget minus room for
+labels) under three candidate scales:
+
+| scale | gap 3→4 | gap 31→32 | ratio |
+|---|---|---|---|
+| $-1/p$ | 70 pt | 0.8 pt | ~80× |
+| $\ln p$ | 31 pt | 3.4 pt | ~9× |
+| $\sqrt p$ | 17 pt | 5.7 pt | ~3× |
+
+$-1/p$ is tempting, because it makes the Euclidean curve
+$\frac1p+\frac1q=\frac12$ a straight line. But it crushes everything above
+$p\approx15$ into a smear. $\ln p$ gives the corner room and still separates
+the far end. All three belong to one family, $-p^{-a}/a$ with $a=1$,
+$a\to0$ and $a=-\tfrac12$, so the exponent is a single knob if the balance
+ever needs tuning.
+
+Details:
+
+* **Dot radius** is $0.3\times$ the local spacing, which is about
+  $\text{scale}/\max(p,q)$, and at least 1 point. The dots shrink smoothly
+  toward the far corner. The test `lattice_dots_are_separate_and_hit_themselves`
+  checks that no two neighbours overlap.
+* **Hit testing** picks the nearest of all 900 dots, which is cheap. So the
+  whole plot is clickable, each dot owning the region closest to it. Hovering
+  shows a ring and a tooltip naming the pair and its geometry. Only hyperbolic
+  dots are selectable, and only those turn the cursor into a pointing hand.
+* **Colors** come from the Okabe–Ito palette, chosen because it stays
+  distinguishable under the common forms of color blindness. The current
+  tiling gets a larger fill and a ring in the theme's strong text color, so
+  the marker works in light and dark themes alike.
+* A faint line traces the Euclidean curve $(p-2)(q-2)=4$ through $\{3,6\}$,
+  $\{4,4\}$ and $\{6,3\}$, the boundary between the two colors.
+
+### 7.7 Testing the panel
+
+The XTest driver from §3.5 does the GUI checks too. A lesson from it:
+coordinates read off a screenshot are easy to get wrong by one lattice
+column. A temporary `eprintln!` of the hovered pair showed that a "broken"
+click on {5,4} had in fact landed on the Euclidean {4,4}, which is
+correctly not selectable.
+
+---
+
+## 8. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -632,9 +791,9 @@ settles.
 
 ---
 
-## 8. Workflow notes
+## 9. Workflow notes
 
-### 8.1 jj
+### 9.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -653,13 +812,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 8.2 Checks before each commit
+### 9.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 8.3 A throwaway verification build
+### 9.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -669,13 +828,14 @@ snapshot into a commit.
 
 ---
 
-## 9. Exercises and extensions
+## 10. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.
-2. **egui panel.** Add `egui` + `egui-wgpu` + `egui-winit` with sliders for
-   p, q, ℓ and line width. The main work is sharing the device and queue and
-   forwarding winit events to egui first.
+2. **Panel beside the disk.** On a narrow window the panel covers part of
+   the disk. When it is shown, move the disk centre right by the panel's
+   width (the `Response::rect` that `egui::Window::show` returns), and keep
+   `App::to_disk` and the shader's `uv` in agreement.
 3. **Rotate about the clicked point** (math §2.3: $T R T^{-1}$). Decide what
    angle to use when the pointer starts on the pivot.
 4. **Zoom.** Isometries cannot zoom. Instead change the disk radius in pixels

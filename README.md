@@ -20,6 +20,17 @@ example) to force a backend.
 
 ## Controls
 
+A panel at the top left holds the main controls:
+
+* **{p,q} lattice:** click a dot to pick a tiling. The axes are logarithmic,
+  and the dot colors tell hyperbolic, Euclidean and spherical pairs apart.
+* **Tile colors mod ℓ:** a toggle, plus a stepper for the prime ℓ and the
+  resulting color count.
+* **Sliders** for line width and vertex size.
+* **Reset view.**
+
+Mouse and keyboard:
+
 | input | action |
 |---|---|
 | left drag | pan; the grabbed point stays under the cursor |
@@ -29,6 +40,7 @@ example) to force a backend.
 | L / Shift+L | step the color prime ℓ up / down |
 | C | toggle quotient colors / two-tone triangles |
 | R | reset the view |
+| H | hide / show the panel |
 
 p and q range over 3..=32. The window title shows the current tiling, ℓ, and
 the number of colors.

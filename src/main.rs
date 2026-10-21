@@ -2,32 +2,31 @@ mod gpu;
 mod hyp;
 mod quotient;
 mod tiling;
+mod ui;
 mod view;
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use glam::DVec2;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalPosition,
     event::{ElementState, KeyEvent, MouseButton, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, ModifiersState, PhysicalKey},
     window::{Window, WindowId},
 };
 
 use gpu::{Renderer, Uniforms};
 use tiling::Tiling;
+use ui::{Action, Gui, Settings};
 use view::View;
 
 /// Gap between the disk and the nearer window edge, px.
 const MARGIN_PX: f32 = 8.0;
-const LINE_WIDTH_PX: f32 = 1.5;
-
-const USAGE: &str = "\
-Drag: pan. Right drag or Shift+drag: rotate.
-P / Shift+P: step p up / down. Q / Shift+Q: step q. R: reset view.
-L / Shift+L: step the prime for tile colors. C: toggle tile colors / two-tone.";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Drag {
@@ -38,13 +37,15 @@ enum Drag {
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    gui: Option<Gui>,
+    /// When egui next wants a frame.
+    repaint_at: Option<Instant>,
+    settings: Settings,
     tiling: Tiling,
     view: View,
     cursor: Option<PhysicalPosition<f64>>,
     modifiers: ModifiersState,
     drag: Option<Drag>,
-    /// Color tiles by the finite quotient, rather than two-tone by parity.
-    quotient_colors: bool,
     /// Number of quotient colors, if small enough to count.
     colors: Option<usize>,
 }
@@ -55,8 +56,10 @@ impl App {
         Self {
             window: None,
             renderer: None,
+            gui: None,
+            repaint_at: None,
+            settings: Settings::default(),
             tiling,
-            quotient_colors: true,
             colors: tiling.quotient.orbit_size(),
             view: View::new(),
             cursor: None,
@@ -80,12 +83,7 @@ impl App {
 
     fn uniforms(&self) -> Uniforms {
         let (w, h, r) = self.geometry();
-        Uniforms::new(
-            &self.view,
-            &self.tiling,
-            [w, h, r, LINE_WIDTH_PX],
-            self.quotient_colors,
-        )
+        Uniforms::new(&self.view, &self.tiling, [w, h, r], &self.settings)
     }
 
     fn redraw(&self) {
@@ -109,6 +107,30 @@ impl App {
         self.window.as_ref().unwrap().set_title(&self.title());
     }
 
+    fn paint(&mut self) {
+        let out = self.gui.as_mut().unwrap().run(
+            self.window.as_ref().unwrap(),
+            &mut self.settings,
+            &self.tiling,
+            self.colors,
+        );
+        // The panel was laid out before any action; redraw to show it.
+        let repaint_after = match out.action {
+            Some(Action::SetTiling(t)) => {
+                self.set_tiling(t);
+                Duration::ZERO
+            }
+            Some(Action::ResetView) => {
+                self.view = View::new();
+                Duration::ZERO
+            }
+            None => out.repaint_after,
+        };
+        self.repaint_at = Instant::now().checked_add(repaint_after);
+        let u = self.uniforms();
+        self.renderer.as_mut().unwrap().render(&u, out.overlay);
+    }
+
     fn key(&mut self, code: KeyCode) {
         let step = if self.modifiers.shift_key() { -1 } else { 1 };
         match code {
@@ -129,7 +151,8 @@ impl App {
                 };
                 self.set_tiling(t);
             }
-            KeyCode::KeyC => self.quotient_colors = !self.quotient_colors,
+            KeyCode::KeyC => self.settings.quotient_colors ^= true,
+            KeyCode::KeyH => self.settings.show_panel ^= true,
             KeyCode::KeyR => self.view = View::new(),
             _ => return,
         }
@@ -147,14 +170,23 @@ impl ApplicationHandler for App {
                 .create_window(Window::default_attributes().with_title(self.title()))
                 .expect("create window"),
         );
-        self.renderer = Some(Renderer::new(
-            window.clone(),
-            event_loop.owned_display_handle(),
-        ));
+        let renderer = Renderer::new(window.clone(), event_loop.owned_display_handle());
+        self.gui = Some(Gui::new(&window, event_loop, renderer.max_texture_side()));
+        self.renderer = Some(renderer);
         self.window = Some(window);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        // Not for egui, which would ask to repaint after every frame.
+        if event == WindowEvent::RedrawRequested {
+            self.paint();
+            return;
+        }
+        let window = self.window.as_ref().unwrap();
+        let egui = self.gui.as_mut().unwrap().on_window_event(window, &event);
+        if egui.repaint {
+            self.redraw();
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -163,10 +195,6 @@ impl ApplicationHandler for App {
                     .unwrap()
                     .resize(size.width, size.height);
                 self.redraw();
-            }
-            WindowEvent::RedrawRequested => {
-                let u = self.uniforms();
-                self.renderer.as_mut().unwrap().render(&u);
             }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::KeyboardInput {
@@ -177,15 +205,16 @@ impl ApplicationHandler for App {
                         ..
                     },
                 ..
-            } => self.key(code),
-            WindowEvent::MouseInput { state, button, .. } => {
-                self.drag = match (state, button) {
-                    (ElementState::Pressed, MouseButton::Left) if self.modifiers.shift_key() => {
-                        Some(Drag::Rotate)
-                    }
-                    (ElementState::Pressed, MouseButton::Left) => Some(Drag::Pan),
-                    (ElementState::Pressed, MouseButton::Right) => Some(Drag::Rotate),
-                    (ElementState::Released, _) => None,
+            } if !egui.consumed => self.key(code),
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                ..
+            } => self.drag = None,
+            WindowEvent::MouseInput { button, .. } if !egui.consumed => {
+                self.drag = match button {
+                    MouseButton::Left if self.modifiers.shift_key() => Some(Drag::Rotate),
+                    MouseButton::Left => Some(Drag::Pan),
+                    MouseButton::Right => Some(Drag::Rotate),
                     _ => self.drag,
                 };
             }
@@ -205,10 +234,22 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        match self.repaint_at {
+            Some(t) if t <= Instant::now() => {
+                self.repaint_at = None;
+                self.redraw();
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
+            Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
+        }
+    }
 }
 
 fn main() {
-    println!("{USAGE}");
+    println!("{}", ui::USAGE);
     let event_loop = EventLoop::new().expect("create event loop");
     event_loop.run_app(&mut App::new()).expect("run event loop");
 }

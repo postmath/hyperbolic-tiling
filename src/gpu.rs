@@ -4,7 +4,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::DVec3;
 use winit::{event_loop::OwnedDisplayHandle, window::Window};
 
-use crate::{hyp::lorentz_inv, tiling::Tiling, view::View};
+use crate::{hyp::lorentz_inv, tiling::Tiling, ui::Settings, view::View};
 
 /// Mirrors `struct U` in `tiling.wgsl`. Every member is 16-byte aligned, so
 /// there is no implicit padding.
@@ -15,8 +15,10 @@ pub struct Uniforms {
     pub m_inv: [[f32; 4]; 3],
     pub mirrors: [[f32; 4]; 3],
     pub vert: [f32; 4],
-    /// xy = resolution px, z = disk radius px, w = line width px
+    /// xy = resolution px, z = disk radius px; w unused.
     pub screen: [f32; 4],
+    /// x = line width px, y = vertex dot radius px; zw unused.
+    pub style: [f32; 4],
     /// Rows n_k of the reduced reflections; w unused.
     pub cox: [[u32; 4]; 3],
     /// Columns of `View::color_frame`; w unused.
@@ -26,7 +28,7 @@ pub struct Uniforms {
 }
 
 impl Uniforms {
-    pub fn new(view: &View, tiling: &Tiling, screen: [f32; 4], quotient_colors: bool) -> Self {
+    pub fn new(view: &View, tiling: &Tiling, [w, h, r]: [f32; 3], settings: &Settings) -> Self {
         let v4 = |v: DVec3| v.as_vec3().extend(0.0).to_array();
         let u4 = |[x, y, z]: [u32; 3]| [x, y, z, 0];
         let quot = &tiling.quotient;
@@ -39,17 +41,29 @@ impl Uniforms {
                 .as_vec3()
                 .extend(tiling.half_edge as f32)
                 .to_array(),
-            screen,
+            screen: [w, h, r, 0.0],
+            style: [settings.line_px, settings.vertex_px, 0.0, 0.0],
             cox: quot.n.map(u4),
             color_frame: view.color_frame.map(u4),
             v0: [
                 quot.v0[0],
                 quot.v0[1],
                 quot.v0[2],
-                if quotient_colors { quot.ell } else { 0 },
+                if settings.quotient_colors {
+                    quot.ell
+                } else {
+                    0
+                },
             ],
         }
     }
+}
+
+/// The egui panel for one frame, tessellated.
+pub struct Overlay {
+    pub primitives: Vec<egui::ClippedPrimitive>,
+    pub textures: egui::TexturesDelta,
+    pub pixels_per_point: f32,
 }
 
 pub struct Renderer {
@@ -60,6 +74,7 @@ pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     uniform_buf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    egui: egui_wgpu::Renderer,
 }
 
 impl Renderer {
@@ -141,6 +156,8 @@ impl Renderer {
             cache: None,
         });
 
+        let egui = egui_wgpu::Renderer::new(&device, config.format, Default::default());
+
         Self {
             surface,
             device,
@@ -149,6 +166,7 @@ impl Renderer {
             pipeline,
             uniform_buf,
             bind_group,
+            egui,
         }
     }
 
@@ -165,7 +183,26 @@ impl Renderer {
         (self.config.width, self.config.height)
     }
 
-    pub fn render(&mut self, uniforms: &Uniforms) {
+    pub fn max_texture_side(&self) -> usize {
+        self.device.limits().max_texture_dimension_2d as usize
+    }
+
+    pub fn render(&mut self, uniforms: &Uniforms, mut overlay: Overlay) {
+        // egui sends each texture change once, so apply them even if the
+        // frame is skipped.
+        for (id, deltas) in overlay.textures.set.drain() {
+            for delta in deltas {
+                self.egui
+                    .update_texture(&self.device, &self.queue, id, &delta);
+            }
+        }
+        self.draw(uniforms, &overlay);
+        for id in overlay.textures.free.drain() {
+            self.egui.free_texture(&id);
+        }
+    }
+
+    fn draw(&mut self, uniforms: &Uniforms, overlay: &Overlay) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
             wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
@@ -183,6 +220,17 @@ impl Renderer {
             .write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(uniforms));
         let view = frame.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [self.config.width, self.config.height],
+            pixels_per_point: overlay.pixels_per_point,
+        };
+        let egui_cmds = self.egui.update_buffers(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &overlay.primitives,
+            &screen,
+        );
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -200,8 +248,11 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
+            self.egui
+                .render(&mut pass.forget_lifetime(), &overlay.primitives, &screen);
         }
-        self.queue.submit([encoder.finish()]);
+        self.queue
+            .submit(egui_cmds.into_iter().chain([encoder.finish()]));
         self.queue.present(frame);
     }
 }

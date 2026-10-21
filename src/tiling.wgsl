@@ -2,7 +2,8 @@ struct U {
   m_inv: mat3x3<f32>,        // screen frame -> tiling frame
   mirrors: array<vec4<f32>, 3>,
   vert: vec4<f32>,           // xyz = V on the hyperboloid, w = half edge length |VE|
-  screen: vec4<f32>,         // xy = resolution px, z = disk radius px, w = line width px
+  screen: vec4<f32>,         // xy = resolution px, z = disk radius px, w unused
+  style: vec4<f32>,          // x = line width px, y = vertex dot radius px, zw unused
   // Tile colors (see quotient.rs): rows n_k of the reflections mod ℓ, the
   // view's color frame (columns), and xyz = v0, w = ℓ or 0 for two-tone.
   cox: array<vec4<u32>, 3>,
@@ -72,8 +73,8 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   let px = 2.0 / (u.screen.z * (1.0 - rho2));
   // Lines and dots keep their pixel size but are capped to a fraction of the
   // tile near the rim, and fade out once sub-pixel; otherwise they swamp it.
-  let w = min(0.5 * u.screen.w * px, 0.08 * u.vert.w);
-  let r = min(3.5 * px, 0.2 * u.vert.w);
+  let w = min(0.5 * u.style.x * px, 0.08 * u.vert.w);
+  let r = min(u.style.y * px, 0.2 * u.vert.w);
 
   let d_edge = asinh(abs(lor(t, u.mirrors[2].xyz)));
   let d_vert = acosh(max(-lor(t, u.vert.xyz), 1.0));
