@@ -33,7 +33,7 @@ Mouse and keyboard:
 
 | input | action |
 |---|---|
-| left drag | pan; the grabbed point stays under the cursor |
+| left drag | pan; the grabbed point stays under the cursor, and leaving the disk ends the drag |
 | right drag, or Shift+left drag | rotate about the disk centre |
 | P / Shift+P | step p up / down, skipping non-hyperbolic {p,q} |
 | Q / Shift+Q | step q up / down |

@@ -8,10 +8,15 @@ use crate::{
     tiling::Tiling,
 };
 
-/// Pan pointers are clamped to this rho^2, where the shader starts its rim fade.
+/// Pan drags hold points up to this rho^2, where the shader starts its rim fade.
 const PAN_RHO2_MAX: f64 = 0.98;
 /// Rotate drags ignore pointers this close to the center, where the angle is noise.
 const ROTATE_RHO_MIN: f64 = 0.02;
+
+/// Whether a pan drag can hold the point at disk position `d`.
+pub fn pannable(d: DVec2) -> bool {
+    d.length_squared() <= PAN_RHO2_MAX
+}
 
 pub struct View {
     /// Tiling frame -> screen frame.
@@ -35,7 +40,8 @@ impl View {
         self.color_frame = quotient::IDENTITY;
     }
 
-    /// Moves the picture so the point under disk position `from` ends up under `to`.
+    /// Moves the picture so the point under disk position `from` ends up under
+    /// `to`. Points beyond `pannable` are clamped to its edge.
     pub fn pan(&mut self, from: DVec2, to: DVec2) {
         let (p, q) = (disk_to_hyp(clamp(from)), disk_to_hyp(clamp(to)));
         self.m = translate(p, q) * self.m;

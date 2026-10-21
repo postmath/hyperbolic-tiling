@@ -398,6 +398,17 @@ huge matrices. `View::rotate` ignores pointer positions within 0.02 of the
 centre, where the angle is noise. `DVec2::angle_to` returns the signed angle
 in $[-\pi,\pi]$, so there are no wraparound bugs.
 
+Clamping alone turned out to be wrong for pans that leave the disk. Outside,
+the clamped point slides along the rim as the pointer moves, and near the
+rim a few pixels is a long hyperbolic distance, so the picture lurched. The
+later commit *End pan drags when the pointer leaves the disk* makes
+$\rho^2\le0.98$ the region a pan can hold (`view::pannable`). A pan starts
+only inside it, and ends on the motion event that leaves it, so that last
+step pans up to the edge. Re-entering the disk does not resume the drag:
+the grabbed point is gone, and resuming would silently grab a new one.
+Rotate drags keep working outside the disk, where the angle is well
+defined.
+
 ### 3.4 Tests
 
 * `translate_carries_p_to_q`: maps $p$ to $q$, is Lorentz, has a pure

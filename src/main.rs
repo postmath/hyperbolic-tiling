@@ -213,7 +213,11 @@ impl ApplicationHandler for App {
             WindowEvent::MouseInput { button, .. } if !egui.consumed => {
                 self.drag = match button {
                     MouseButton::Left if self.modifiers.shift_key() => Some(Drag::Rotate),
-                    MouseButton::Left => Some(Drag::Pan),
+                    MouseButton::Left
+                        if self.cursor.is_some_and(|c| view::pannable(self.to_disk(c))) =>
+                    {
+                        Some(Drag::Pan)
+                    }
                     MouseButton::Right => Some(Drag::Rotate),
                     _ => self.drag,
                 };
@@ -222,7 +226,13 @@ impl ApplicationHandler for App {
                 if let (Some(drag), Some(old)) = (self.drag, self.cursor) {
                     let (from, to) = (self.to_disk(old), self.to_disk(position));
                     match drag {
-                        Drag::Pan => self.view.pan(from, to),
+                        Drag::Pan => {
+                            self.view.pan(from, to);
+                            // Past the rim the grabbed point can't follow; let go.
+                            if !view::pannable(to) {
+                                self.drag = None;
+                            }
+                        }
                         Drag::Rotate => self.view.rotate(from, to),
                     }
                     self.view.settle(&self.tiling);
