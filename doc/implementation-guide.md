@@ -918,9 +918,15 @@ and are usually precise.
 
 ## Appendix B. Rust idioms in this code
 
-* **`Option` fields filled in later** (`App::window`, `App::renderer`), with
-  `unwrap()` at use sites that cannot run before `resumed`. The alternative,
-  an enum `App { Starting, Running(State) }`, is cleaner at scale.
+* **An enum for state that arrives later.** Until the commit *Hand the
+  renderer to the app as a user event*, `App` had `Option` fields for the
+  window and renderer, with `unwrap()` at use sites that could not run before
+  `resumed`. Now `Gfx` is `None`, `Pending(window)` or `Ready(Ready)`, and
+  events are handled only once it is `Ready`. The split into `App` (event
+  plumbing), `Model` (what is shown) and `Ready` (window, renderer, panel)
+  also serves the borrow checker: `self.model.window_event(gfx, event)`
+  borrows two separate fields of `App`, where a method on `App` would borrow
+  all of it.
 * **`let … else`** for early returns:
   `let Some(t) = self.tiling.stepped(dp, dq) else { return; };`.
 * **Arrays as small fixed-size values.** `[[u32; 3]; 3]` matrices, built with
