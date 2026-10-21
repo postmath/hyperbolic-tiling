@@ -1,13 +1,17 @@
 //! Stable tile colors from a finite quotient of the triangle group.
 //!
-//! Coxeter's geometric representation of Δ(p,q,2) = <a,b,c> is
-//! σ_i(v) = v - (2B v)_i e_i, with B the Gram matrix, whose doubled entries
-//! 2, -2cos(π/p), -2cos(π/q), 0 are algebraic integers. Sending 2cos(π/m) to
-//! ζ + ζ⁻¹ for ζ of order 2m in 𝔽_ℓ (needs ℓ ≡ 1 mod 2m) gives matrices over
-//! 𝔽_ℓ; when they still satisfy the Coxeter relations this is a homomorphism
-//! φ: Δ → GL₃(𝔽_ℓ). The tile gP gets color φ(g)·v₀ with v₀ fixed by σ_a, σ_b,
-//! which is well defined because ⟨a,b⟩ is the stabilizer of P, and independent
-//! of the word chosen for g because φ is a homomorphism.
+//! A point x has mirror coordinates y_i = c_i·x, on which the reflection in
+//! mirror i acts as σ_i(y) = y - y_i (2B)e_i, with B the Gram matrix of the
+//! mirrors: the transpose of Coxeter's geometric representation of
+//! Δ(p,q,2) = <a,b,c>. The doubled entries 2, -2cos(π/p), -2cos(π/q), 0 of B
+//! are algebraic integers. Sending 2cos(π/m) to ζ + ζ⁻¹ for ζ of order 2m in
+//! 𝔽_ℓ (needs ℓ ≡ 1 mod 2m) gives matrices over 𝔽_ℓ; when they still satisfy
+//! the Coxeter relations this is a homomorphism φ: Δ → GL₃(𝔽_ℓ). The tile gP
+//! gets color φ(g)e_c: the center O has mirror coordinates (0, 0, c·O), so this
+//! is gO reduced mod ℓ, up to scale. It is well defined because ⟨a,b⟩, the
+//! stabilizer of P, fixes e_c, and independent of the word chosen for g
+//! because φ is a homomorphism. Unlike the geometric representation itself,
+//! this works for Euclidean tilings too, where B is singular.
 
 use std::collections::HashSet;
 
@@ -24,10 +28,12 @@ const MAX_ORBIT: usize = 1 << 18;
 #[derive(Clone, Copy, Debug)]
 pub struct Quotient {
     pub ell: u32,
-    /// Row i is n_i with σ_i = I + e_i n_iᵀ, i.e. n_i = -(2B)_i mod ℓ.
+    /// n_i = -(2B)_i mod ℓ, so σ_i = I + n_i e_iᵀ.
     pub n: [[u32; 3]; 3],
-    pub v0: [u32; 3],
 }
+
+/// The color of the tile at the origin; see the module comment.
+pub const E_C: [u32; 3] = [0, 0, 1];
 
 impl Quotient {
     /// `None` unless ℓ is a prime below MAX_ELL with ℓ ≡ 1 mod 2p and mod 2q
@@ -44,15 +50,13 @@ impl Quotient {
         };
         let (lp, lq, m2) = (lambda(p), lambda(q), ell - 2);
         let n = [[m2, lp, lq], [lp, m2, 0], [lq, 0, m2]];
-        let v0 = cross(n[0], n[1], ell);
-        let quot = Self { ell, n, v0 };
+        let quot = Self { ell, n };
         let s = [0, 1, 2].map(|i| quot.reflect_right(IDENTITY, i));
         let order_divides = |a: usize, b: usize, m: u32| {
             let ab = quot.mul(s[a], s[b]);
             (0..m).fold(IDENTITY, |acc, _| quot.mul(acc, ab)) == IDENTITY
         };
-        let ok = v0 != [0; 3]
-            && order_divides(0, 0, 1)
+        let ok = order_divides(0, 0, 1)
             && order_divides(1, 1, 1)
             && order_divides(2, 2, 1)
             && order_divides(0, 1, p)
@@ -79,9 +83,11 @@ impl Quotient {
         Self::stepped(p, q, 1, 1)
     }
 
-    /// a · σ_k: column j gains column k times n_k[j].
+    /// a · σ_k: column k gains a · n_k.
     pub fn reflect_right(&self, a: ModMat, k: usize) -> ModMat {
-        std::array::from_fn(|j| [0, 1, 2].map(|r| (a[j][r] + a[k][r] * self.n[k][j]) % self.ell))
+        let (mut b, an) = (a, self.apply(a, self.n[k]));
+        b[k] = [0, 1, 2].map(|r| (a[k][r] + an[r]) % self.ell);
+        b
     }
 
     pub fn apply(&self, a: ModMat, v: [u32; 3]) -> [u32; 3] {
@@ -94,8 +100,8 @@ impl Quotient {
 
     /// Number of distinct colors, i.e. tiles of the finite quotient, if at most MAX_ORBIT.
     pub fn orbit_size(&self) -> Option<usize> {
-        let mut seen = HashSet::from([self.v0]);
-        let mut todo = vec![self.v0];
+        let mut seen = HashSet::from([E_C]);
+        let mut todo = vec![E_C];
         while let Some(v) = todo.pop() {
             for k in 0..3 {
                 let w = self.apply(self.reflect_right(IDENTITY, k), v);
@@ -109,14 +115,6 @@ impl Quotient {
         }
         Some(seen.len())
     }
-}
-
-fn cross(a: [u32; 3], b: [u32; 3], ell: u32) -> [u32; 3] {
-    let m = |x: u32, y: u32| x * y % ell;
-    [0, 1, 2].map(|i| {
-        let (j, k) = ((i + 1) % 3, (i + 2) % 3);
-        (m(a[j], b[k]) + ell - m(a[k], b[j])) % ell
-    })
 }
 
 fn pow(mut b: u32, mut e: u32, ell: u32) -> u32 {
@@ -186,27 +184,62 @@ mod tests {
     }
 
     #[test]
-    fn v0_is_fixed_by_tile_stabilizer_only() {
-        let quot = Quotient::first(7, 3).unwrap();
-        let s = |k| quot.apply(quot.reflect_right(IDENTITY, k), quot.v0);
-        assert_eq!(s(0), quot.v0);
-        assert_eq!(s(1), quot.v0);
-        assert_ne!(s(2), quot.v0);
+    fn e_c_is_fixed_by_tile_stabilizer_only() {
+        for (p, q) in [(7, 3), (4, 4), (5, 3)] {
+            let quot = Quotient::first(p, q).unwrap();
+            let s = |k| quot.apply(quot.reflect_right(IDENTITY, k), E_C);
+            assert_eq!(s(0), E_C);
+            assert_eq!(s(1), E_C);
+            assert_ne!(s(2), E_C);
+        }
     }
 
-    /// The reflections preserve the form Q(v) = vᵀ(2B)v, and for these pairs
-    /// the colors are a whole level set of Q, as when φ is onto O(Q) (Witt).
+    /// The faces of the Platonic solids.
+    #[test]
+    fn spherical_colors_are_the_tiles() {
+        for (p, q, faces) in [(3, 3, 4), (3, 4, 8), (4, 3, 6), (3, 5, 20), (5, 3, 12)] {
+            let quot = Quotient::first(p, q).unwrap();
+            assert_eq!(quot.orbit_size(), Some(faces), "{{{p},{q}}}");
+        }
+    }
+
+    /// The ℓ² tiles of a torus: translations are unipotent, so of order ℓ.
+    #[test]
+    fn euclidean_colors_are_a_torus() {
+        for (p, q) in [(4, 4), (3, 6), (6, 3)] {
+            let mut quot = Quotient::first(p, q);
+            for _ in 0..3 {
+                let qu = quot.unwrap();
+                assert_eq!(qu.orbit_size(), Some(qu.ell as usize * qu.ell as usize));
+                quot = Quotient::stepped(p, q, qu.ell, 1);
+            }
+        }
+    }
+
+    /// The reflections preserve the form Q(w) = wᵀ adj(2B) w, dual to 2B, and
+    /// for these pairs the colors are a whole level set of Q, as when φ is
+    /// onto O(Q) (Witt).
     #[test]
     fn colors_fill_a_sphere_of_the_invariant_form() {
         for (p, q) in [(7, 3), (3, 7), (5, 4), (4, 5), (8, 8)] {
             let quot = Quotient::first(p, q).unwrap();
             let ell = quot.ell;
-            // 2B = -N mod ℓ; the sign does not matter for level sets.
-            let form = |v: [u32; 3]| {
-                let nv = quot.apply(quot.n, v);
-                (0..3).fold(0, |acc, i| (acc + v[i] * nv[i]) % ell)
+            // adj(-2B) = adj(2B); N is symmetric, so its adjugate's columns
+            // are cross products of its rows.
+            let m = |x: u32, y: u32| x * y % ell;
+            let cross = |a: [u32; 3], b: [u32; 3]| {
+                [0, 1, 2].map(|i| {
+                    let (j, k) = ((i + 1) % 3, (i + 2) % 3);
+                    (m(a[j], b[k]) + ell - m(a[k], b[j])) % ell
+                })
             };
-            let c = form(quot.v0);
+            let n = quot.n;
+            let adj = [cross(n[1], n[2]), cross(n[2], n[0]), cross(n[0], n[1])];
+            let form = |w: [u32; 3]| {
+                let aw = quot.apply(adj, w);
+                (0..3).fold(0, |acc, i| (acc + m(w[i], aw[i])) % ell)
+            };
+            let c = form(E_C);
             assert_ne!(c, 0);
             for k in 0..3 {
                 let s = quot.reflect_right(IDENTITY, k);

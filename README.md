@@ -1,10 +1,12 @@
 # hyperbolic-tiling
 
-An interactive viewer for regular hyperbolic tilings $\{p,q\}$ in the Poincaré
-disk, written in Rust with wgpu and winit.
+An interactive viewer for regular tilings $\{p,q\}$, written in Rust with
+wgpu and winit. Hyperbolic tilings are shown in the Poincaré disk, Euclidean
+ones as a plane to pan over, and spherical ones (the Platonic solids) by
+stereographic projection of the sphere.
 
 The whole picture is drawn by one fragment shader. Each pixel is mapped onto
-the hyperboloid and reflected back into the fundamental triangle of the
+the hyperboloid, plane or sphere and reflected back into the fundamental triangle of the
 $(2,p,q)$ triangle group. All state and the precision-sensitive math stay on
 the CPU in f64. Tiles are colored through a finite quotient of the triangle
 group mod a prime ℓ, so every tile keeps the same color however far you pan.
@@ -46,9 +48,9 @@ Mouse and keyboard:
 
 | input | action |
 |---|---|
-| left drag | pan; the grabbed point stays under the cursor, and leaving the disk ends the drag |
-| right drag, or Shift+left drag | rotate about the disk centre |
-| P / Shift+P | step p up / down, skipping non-hyperbolic {p,q} |
+| left drag | pan; the grabbed point stays under the cursor, and leaving the hyperbolic disk ends the drag |
+| right drag, or Shift+left drag | rotate about the window centre |
+| P / Shift+P | step p up / down |
 | Q / Shift+Q | step q up / down |
 | L / Shift+L | step the color prime ℓ up / down |
 | C | toggle quotient colors / two-tone triangles |
@@ -73,7 +75,8 @@ coloring.
 
 * [doc/math-guide.md](doc/math-guide.md) covers the mathematics from linear
   algebra up: the hyperboloid model, isometries, triangle groups and folding,
-  holonomy, and the finite quotients behind the colors.
+  holonomy, the finite quotients behind the colors, and the one model that
+  covers all three curvatures.
 * [doc/implementation-guide.md](doc/implementation-guide.md) walks through
   the code one milestone (commit) at a time: wgpu and winit setup, the
   shader, input handling, precision, and testing.

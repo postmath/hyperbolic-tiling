@@ -6,37 +6,23 @@ use std::f64::consts::PI;
 
 use glam::DVec3;
 
-use crate::{hyp::lor, quotient::Quotient};
+use crate::{geom::Geometry, quotient::Quotient};
 
 /// Fold sweeps over the three mirrors; must match `MAX_SWEEPS` in tiling.wgsl.
 pub const MAX_SWEEPS: u32 = 64;
 /// Largest supported p and q. The fold needs more sweeps as p or q grows
-/// (about 35 at 32); see `fold_converges_within_cap_at_rim`.
+/// (about 35 at 32); see `fold_converges_within_cap`.
 pub const MAX_PQ: u32 = 32;
-
-/// The geometry a {p,q} tiling lives in, for p, q >= 3.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Geometry {
-    Spherical,
-    Euclidean,
-    Hyperbolic,
-}
-
-impl Geometry {
-    pub fn of(p: u32, q: u32) -> Self {
-        match ((p - 2) * (q - 2)).cmp(&4) {
-            std::cmp::Ordering::Less => Self::Spherical,
-            std::cmp::Ordering::Equal => Self::Euclidean,
-            std::cmp::Ordering::Greater => Self::Hyperbolic,
-        }
-    }
-}
+/// |OV| of Euclidean tilings, whose size is otherwise arbitrary. Close to that
+/// of the hyperbolic {7,3} and the spherical {3,5} and {5,3}.
+const EUCLIDEAN_RADIUS: f64 = 0.6;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Tiling {
     pub p: u32,
     pub q: u32,
-    /// Inward unit normals of the mirrors OV, OE, VE. VE carries polygon edges.
+    pub geometry: Geometry,
+    /// Inward unit covectors of the mirrors OV, OE, VE. VE carries polygon edges.
     pub mirrors: [DVec3; 3],
     pub vert: DVec3,
     /// Half the polygon edge length, |VE|.
@@ -54,49 +40,39 @@ pub struct Fold {
 }
 
 impl Tiling {
-    /// `None` unless {p,q} is hyperbolic and p, q <= MAX_PQ.
+    /// `None` unless 3 <= p, q <= MAX_PQ.
     pub fn new(p: u32, q: u32) -> Option<Self> {
-        if !(3..=MAX_PQ).contains(&p)
-            || !(3..=MAX_PQ).contains(&q)
-            || Geometry::of(p, q) != Geometry::Hyperbolic
-        {
+        if !(3..=MAX_PQ).contains(&p) || !(3..=MAX_PQ).contains(&q) {
             return None;
         }
+        let g = Geometry::of(p, q);
         let (sp, cp) = (PI / p as f64).sin_cos();
-        let (sq, cq) = (PI / q as f64).sin_cos();
-        let cot_p = cp / sp;
-        let cosh_r = cot_p / (PI / q as f64).tan();
-        let k = ((cq * cq) / (sp * sp) - 1.0).sqrt();
+        let cq = (PI / q as f64).cos();
+        // VE is perpendicular to OE and meets OV at angle π/q; its offset c0
+        // follows from the normalization, except in the Euclidean case.
+        let c1 = -cq * cp / sp;
+        let c0 = match g {
+            Geometry::Euclidean => -EUCLIDEAN_RADIUS * c1,
+            _ => (g.kappa() * (1.0 - (cq / sp).powi(2))).sqrt(),
+        };
+        let mirrors = [DVec3::Z, DVec3::new(0.0, sp, -cp), DVec3::new(c0, c1, -cq)];
+        let vert = g.meet(mirrors[0], mirrors[2]);
         Some(Self {
             p,
             q,
-            mirrors: [
-                DVec3::new(0.0, 0.0, 1.0),
-                DVec3::new(0.0, sp, -cp),
-                DVec3::new(-k, -cq * cot_p, -cq),
-            ],
-            vert: DVec3::new(cosh_r, (cosh_r * cosh_r - 1.0).sqrt(), 0.0),
-            half_edge: (cp / sq).acosh(),
+            geometry: g,
+            mirrors,
+            vert,
+            half_edge: 0.5 * g.dist(vert, g.reflect(mirrors[1]) * vert),
             quotient: Quotient::first(p, q)?,
         })
     }
 
-    /// Steps p by `dp` (or q by `dq`) repeatedly until {p,q} is valid;
-    /// `None` if it leaves 3..=MAX_PQ first.
+    /// Steps p by `dp` (or q by `dq`); `None` if that leaves 3..=MAX_PQ.
     pub fn stepped(&self, dp: i32, dq: i32) -> Option<Self> {
-        let (mut p, mut q) = (self.p as i32, self.q as i32);
-        loop {
-            (p, q) = (p + dp, q + dq);
-            if p < 3 || q < 3 {
-                return None;
-            }
-            if let Some(t) = Self::new(p as u32, q as u32) {
-                return Some(t);
-            }
-            if p as u32 > MAX_PQ || q as u32 > MAX_PQ {
-                return None;
-            }
-        }
+        let p = self.p.checked_add_signed(dp)?;
+        let q = self.q.checked_add_signed(dq)?;
+        Self::new(p, q)
     }
 
     /// Steps ℓ for the tile coloring to the next admissible prime in direction `dir`.
@@ -110,10 +86,10 @@ impl Tiling {
         let (mut point, mut word) = (x, vec![]);
         for sweeps in 0..MAX_SWEEPS {
             let mut changed = false;
-            for (k, n) in self.mirrors.into_iter().enumerate() {
-                let d = lor(point, n);
+            for (k, c) in self.mirrors.into_iter().enumerate() {
+                let d = point.dot(c);
                 if d < 0.0 {
-                    point -= 2.0 * d * n;
+                    point -= 2.0 * d * self.geometry.normal(c);
                     word.push(k);
                     changed = true;
                 }
@@ -137,10 +113,18 @@ impl Tiling {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hyp::{ORIGIN, disk_to_hyp, reflect, tests::assert_close, translate};
+    use crate::geom::{ORIGIN, tests::assert_close};
     use glam::DVec2;
 
-    const PAIRS: [(u32, u32); 8] = [
+    const PAIRS: [(u32, u32); 16] = [
+        (3, 3),
+        (3, 4),
+        (4, 3),
+        (3, 5),
+        (5, 3),
+        (4, 4),
+        (3, 6),
+        (6, 3),
         (7, 3),
         (3, 7),
         (5, 4),
@@ -152,17 +136,8 @@ mod tests {
     ];
 
     #[test]
-    fn rejects_non_hyperbolic() {
-        for (p, q) in [
-            (3, 3),
-            (4, 4),
-            (6, 3),
-            (3, 6),
-            (4, 3),
-            (2, 9),
-            (9, 2),
-            (3, 33),
-        ] {
+    fn rejects_out_of_range() {
+        for (p, q) in [(2, 9), (9, 2), (3, 33), (33, 3)] {
             assert!(Tiling::new(p, q).is_none(), "{{{p},{q}}}");
         }
     }
@@ -183,13 +158,12 @@ mod tests {
     }
 
     #[test]
-    fn stepping_skips_non_hyperbolic() {
+    fn stepping_stays_in_range() {
         let pq = |t: Option<Tiling>| t.map(|t| (t.p, t.q));
         let t73 = Tiling::new(7, 3).unwrap();
         assert_eq!(pq(t73.stepped(1, 0)), Some((8, 3)));
-        assert_eq!(pq(t73.stepped(-1, 0)), None);
-        assert_eq!(pq(Tiling::new(4, 5).unwrap().stepped(0, -1)), None);
-        assert_eq!(pq(Tiling::new(3, 8).unwrap().stepped(0, -1)), Some((3, 7)));
+        assert_eq!(pq(t73.stepped(-1, 0)), Some((6, 3)));
+        assert_eq!(pq(t73.stepped(0, -1)), None);
         assert_eq!(pq(Tiling::new(32, 3).unwrap().stepped(1, 0)), None);
     }
 
@@ -197,59 +171,73 @@ mod tests {
     fn gram_conditions() {
         for (p, q) in PAIRS {
             let t = Tiling::new(p, q).unwrap();
+            let g = t.geometry;
             let [a, b, c] = t.mirrors;
             let cos = |m: u32| (PI / m as f64).cos();
             for n in t.mirrors {
-                assert!((lor(n, n) - 1.0).abs() < 1e-9);
+                assert!((g.form(n, n) - 1.0).abs() < 1e-9);
             }
-            assert!((lor(a, b) + cos(p)).abs() < 1e-9);
-            assert!((lor(a, c) + cos(q)).abs() < 1e-9);
-            assert!(lor(b, c).abs() < 1e-9);
-            assert!((lor(t.vert, t.vert) + 1.0).abs() < 1e-9);
-            assert!(lor(t.vert, a).abs() < 1e-9);
-            assert!(lor(t.vert, c).abs() < 1e-9);
-            // V's mirror image across OE is the polygon's next vertex.
-            let v2 = crate::hyp::reflect(b) * t.vert;
-            assert!((-lor(t.vert, v2) - (2.0 * t.half_edge).cosh()).abs() < 1e-9);
+            assert!((g.form(a, b) + cos(p)).abs() < 1e-9);
+            assert!((g.form(a, c) + cos(q)).abs() < 1e-9);
+            assert!(g.form(b, c).abs() < 1e-9);
+            let v = t.vert;
+            assert!((v.x * v.x + g.kappa() * (v.y * v.y + v.z * v.z) - 1.0).abs() < 1e-9);
+            assert!(v.dot(a).abs() < 1e-9);
+            assert!(v.dot(c).abs() < 1e-9);
+            // Right triangle VEO: cos_κ |VE| = cos(π/p) / sin(π/q), or in the
+            // plane |VE| = |OV| sin(π/p).
+            let (sp, sq) = ((PI / p as f64).sin(), (PI / q as f64).sin());
+            let err = match g {
+                Geometry::Spherical => t.half_edge.cos() - cos(p) / sq,
+                Geometry::Euclidean => t.half_edge - EUCLIDEAN_RADIUS * sp,
+                Geometry::Hyperbolic => t.half_edge.cosh() - cos(p) / sq,
+            };
+            assert!(err.abs() < 1e-9, "{{{p},{q}}}");
             // Origin strictly inside the triangle.
-            assert!(lor(DVec3::X, c) > 0.0);
+            assert!(ORIGIN.dot(c) > 0.0);
         }
     }
 
     #[test]
     fn fold_lands_in_triangle() {
-        let t = Tiling::new(7, 3).unwrap();
-        let x = disk_to_hyp(DVec2::new(0.6, -0.7));
-        let f = t.fold(x);
-        assert!(f.sweeps < MAX_SWEEPS);
-        let y = f.point;
-        assert!(t.mirrors.iter().all(|&n| lor(y, n) >= -1e-9));
-        assert!((lor(y, y) + 1.0).abs() < 1e-9);
-        let replayed = f.word.iter().fold(x, |x, &k| reflect(t.mirrors[k]) * x);
-        assert_close(replayed, y, 1e-9);
-    }
-
-    /// Worst case of the shader's fold cap over the drawn region rho^2 <= 0.999,
-    /// with the view centered on each corner of the fundamental triangle (where
-    /// `View::settle` keeps it).
-    #[test]
-    fn fold_converges_within_cap_at_rim() {
-        let rho = 0.999f64.sqrt();
         for (p, q) in PAIRS {
             let t = Tiling::new(p, q).unwrap();
-            let [_, b, c] = t.mirrors.map(|n| DVec3::new(-n.x, n.y, n.z));
-            let e = b.cross(c);
-            let e = e / (-lor(e, e)).sqrt() * e.x.signum();
+            let g = t.geometry;
+            let x = g.disk_to_point(DVec2::new(0.6, -0.7));
+            let f = t.fold(x);
+            assert!(f.sweeps < MAX_SWEEPS);
+            let y = f.point;
+            assert!(t.mirrors.iter().all(|&c| y.dot(c) >= -1e-9));
+            let replayed = f.word.iter().fold(x, |x, &k| g.reflect(t.mirrors[k]) * x);
+            assert_close(replayed, y, 1e-9);
+        }
+    }
+
+    /// Worst case of the shader's fold cap over what can be on screen, with
+    /// the view centered on each corner of the fundamental triangle (where
+    /// `View::settle` keeps it): the disk up to rho^2 = 0.999, the whole sphere
+    /// but the antipode, and a plane 4 disk radii across from the center.
+    #[test]
+    fn fold_converges_within_cap() {
+        for (p, q) in PAIRS {
+            let t = Tiling::new(p, q).unwrap();
+            let g = t.geometry;
+            let rho = match g {
+                Geometry::Spherical => 100.0,
+                Geometry::Euclidean => 4.0,
+                Geometry::Hyperbolic => 0.999f64.sqrt(),
+            };
+            let e = g.meet(t.mirrors[1], t.mirrors[2]);
             let worst = [ORIGIN, t.vert, e]
                 .into_iter()
                 .flat_map(|center| {
-                    let m_inv = translate(ORIGIN, center);
+                    let m_inv = g.translate(ORIGIN, center);
                     (0..4096).flat_map(move |i| (1..=8).map(move |r| (m_inv, i, r)))
                 })
                 .map(|(m_inv, i, r)| {
                     let a = i as f64 / 4096.0 * 2.0 * PI;
                     let d = rho * r as f64 / 8.0 * DVec2::from_angle(a);
-                    t.fold(m_inv * disk_to_hyp(d)).sweeps
+                    t.fold(m_inv * g.disk_to_point(d)).sweeps
                 })
                 .max()
                 .unwrap();

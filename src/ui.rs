@@ -8,8 +8,9 @@ use egui::{
 use winit::{event::WindowEvent, raw_window_handle::HasDisplayHandle, window::Window};
 
 use crate::{
+    geom::Geometry,
     gpu::Overlay,
-    tiling::{Geometry, MAX_PQ, Tiling},
+    tiling::{MAX_PQ, Tiling},
 };
 
 const USAGE: &str = "\
@@ -133,7 +134,12 @@ fn panel(
     ui.set_width(LATTICE_PX);
     let mut action = None;
 
-    ui.label(format!("Tiling {{{},{}}}", tiling.p, tiling.q));
+    ui.label(format!(
+        "Tiling {{{},{}}}, {}",
+        tiling.p,
+        tiling.q,
+        tiling.geometry.name()
+    ));
     if let Some((p, q)) = lattice(ui, tiling) {
         action = Tiling::new(p, q).map(Action::SetTiling);
     }
@@ -182,14 +188,6 @@ fn geometry_color(g: Geometry) -> Color32 {
     }
 }
 
-fn geometry_name(g: Geometry) -> &'static str {
-    match g {
-        Geometry::Spherical => "spherical",
-        Geometry::Euclidean => "Euclidean",
-        Geometry::Hyperbolic => "hyperbolic",
-    }
-}
-
 fn legend(ui: &mut Ui) {
     ui.horizontal(|ui| {
         for g in [
@@ -200,7 +198,7 @@ fn legend(ui: &mut Ui) {
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
             ui.painter()
                 .circle_filled(rect.center(), 4.0, geometry_color(g));
-            ui.small(geometry_name(g));
+            ui.small(g.name());
         }
     });
     ui.small("p across, q up");
@@ -250,8 +248,8 @@ impl Lattice {
     }
 }
 
-/// Draws the lattice with the current tiling marked; returns the hyperbolic
-/// {p,q} clicked, if any.
+/// Draws the lattice with the current tiling marked; returns the {p,q}
+/// clicked, if any.
 fn lattice(ui: &mut Ui, tiling: &Tiling) -> Option<(u32, u32)> {
     let (response, painter) = ui.allocate_painter(Vec2::splat(LATTICE_PX), Sense::click());
     // Room for tick labels left and below, and for the largest dots.
@@ -292,21 +290,18 @@ fn lattice(ui: &mut Ui, tiling: &Tiling) -> Option<(u32, u32)> {
     ring(current, strong);
 
     let hovered = lat.nearest(response.hover_pos()?);
-    let geometry = Geometry::of(hovered.0, hovered.1);
     if hovered != current {
         ring(hovered, weak);
     }
-    if geometry == Geometry::Hyperbolic {
-        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-    }
+    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     let clicked = response.clicked();
     response.on_hover_text_at_pointer(format!(
         "{{{},{}}} {}",
         hovered.0,
         hovered.1,
-        geometry_name(geometry)
+        Geometry::of(hovered.0, hovered.1).name()
     ));
-    (clicked && geometry == Geometry::Hyperbolic).then_some(hovered)
+    clicked.then_some(hovered)
 }
 
 #[cfg(test)]

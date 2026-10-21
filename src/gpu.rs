@@ -4,7 +4,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::DVec3;
 use winit::{event_loop::OwnedDisplayHandle, window::Window};
 
-use crate::{hyp::lorentz_inv, tiling::Tiling, ui::Settings, view::View};
+use crate::{tiling::Tiling, ui::Settings, view::View};
 
 /// Mirrors `struct U` in `tiling.wgsl`. Every member is 16-byte aligned, so
 /// there is no implicit padding.
@@ -13,18 +13,19 @@ use crate::{hyp::lorentz_inv, tiling::Tiling, ui::Settings, view::View};
 pub struct Uniforms {
     /// Columns, each padded to vec4.
     pub m_inv: [[f32; 4]; 3],
+    /// Covectors; w unused.
     pub mirrors: [[f32; 4]; 3],
     pub vert: [f32; 4],
-    /// xy = resolution px, z = disk radius px; w unused.
+    /// xy = resolution px, z = disk radius px, w = curvature κ.
     pub screen: [f32; 4],
     /// x = line width px, y = vertex dot radius px; zw unused.
     pub style: [f32; 4],
-    /// Rows n_k of the reduced reflections; w unused.
+    /// n_k of the reduced reflections; w unused.
     pub cox: [[u32; 4]; 3],
     /// Columns of `View::color_frame`; w unused.
     pub color_frame: [[u32; 4]; 3],
-    /// xyz = v0, w = ℓ, or 0 for two-tone parity coloring.
-    pub v0: [u32; 4],
+    /// x = ℓ, or 0 for two-tone parity coloring; yzw unused.
+    pub ell: [u32; 4],
 }
 
 impl Uniforms {
@@ -32,7 +33,7 @@ impl Uniforms {
         let v4 = |v: DVec3| v.as_vec3().extend(0.0).to_array();
         let u4 = |[x, y, z]: [u32; 3]| [x, y, z, 0];
         let quot = &tiling.quotient;
-        let m_inv = lorentz_inv(view.m);
+        let m_inv = view.m.inverse();
         Self {
             m_inv: [v4(m_inv.x_axis), v4(m_inv.y_axis), v4(m_inv.z_axis)],
             mirrors: tiling.mirrors.map(v4),
@@ -41,19 +42,19 @@ impl Uniforms {
                 .as_vec3()
                 .extend(tiling.half_edge as f32)
                 .to_array(),
-            screen: [w, h, r, 0.0],
+            screen: [w, h, r, tiling.geometry.kappa() as f32],
             style: [settings.line_px, settings.vertex_px, 0.0, 0.0],
             cox: quot.n.map(u4),
             color_frame: view.color_frame.map(u4),
-            v0: [
-                quot.v0[0],
-                quot.v0[1],
-                quot.v0[2],
+            ell: [
                 if settings.quotient_colors {
                     quot.ell
                 } else {
                     0
                 },
+                0,
+                0,
+                0,
             ],
         }
     }

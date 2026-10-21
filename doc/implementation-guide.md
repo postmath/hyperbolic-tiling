@@ -16,8 +16,8 @@ Read it next to the code: `jj log` shows one commit per milestone, and
 src/main.rs      winit application: window, input events, App state
 src/gpu.rs       wgpu setup and per-frame rendering; the Uniforms struct
 src/tiling.wgsl  the vertex and fragment shaders: fold, edges, dots, colors
-src/hyp.rs       hyperboloid-model math in f64: Lorentz form, reflections,
-                 translations, rotations, Gram–Schmidt, disk <-> hyperboloid
+src/geom.rs      the three geometries in one model, in f64: forms,
+                 reflections, translations, rotations, disk <-> surface
 src/tiling.rs    a {p,q} tiling: mirrors, vertex V, the CPU fold
 src/view.rs      the view matrix M, pan/rotate, settling (rebasing)
 src/quotient.rs  finite quotient mod ℓ for stable tile colors
@@ -38,8 +38,9 @@ What happens per input event and per frame:
    `Renderer::render` uploads it, draws one fullscreen triangle, and draws
    the panel on top.
 4. For every pixel the fragment shader maps the pixel to the disk, then to
-   the hyperboloid, then through $M^{-1}$ into the tiling frame. It folds the
-   point into the fundamental triangle and shades it.
+   the hyperboloid, plane or sphere (§9), then through $M^{-1}$ into the
+   tiling frame. It folds the point into the fundamental triangle and shades
+   it.
 
 The division of labour matters. **All state and all the delicate math are on
 the CPU in f64. The GPU gets a fresh, small, self-contained snapshot each
@@ -221,7 +222,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §10.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §11.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -720,7 +721,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§9) that is acceptable.
+thousand ALU operations per pixel (§10) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -875,7 +876,88 @@ because there the browser offers no WebGPU implementation to delegate to.
 
 ---
 
-## 9. Precision and performance notes
+## 9. Milestone 9: Euclidean and spherical tilings
+
+Commit: *Support Euclidean and spherical tilings.* The mathematics is in
+math §10.
+
+### 9.1 One code path, parametrized by κ
+
+`hyp.rs` became `geom.rs`. The `Geometry` enum moved there from `tiling.rs`
+and gained the methods that used to be free hyperboloid functions. Each one is
+the κ-general formula of math §10.1–10.3, so geometry-specific `match`es are
+rare: `kappa`, `asin` (sinh⁻¹, identity, sin⁻¹), `name`, and the Euclidean
+size of the triangle in `Tiling::new`.
+
+* **Mirrors are covectors.** For the hyperbolic case that is $Jn$: the first
+  component of each old normal flips sign. The fold tests `c·t < 0` with the
+  plain dot product and reflects with `t -= 2 d Kc` (`Geometry::normal`). The
+  word it finds is the same as before.
+* **The Lorentz-only shortcuts are gone.** $JM^{\mathsf T}J$ became
+  `DMat3::inverse`, Lorentzian Gram–Schmidt became the $T(MO)R(\alpha)$
+  refactoring, and the two-reflection `translate` became a conjugated
+  transvection. None of the old forms has a κ = 0 analogue, because the
+  Euclidean point form is degenerate.
+* **The shader** gets κ in the spare `screen.w` and uses it in four places:
+  the inverse projection, the pixel size, `normal`, and `asin_k`. The
+  branches in `asin_k` test a uniform, so every pixel takes the same one. The
+  disk test became `-κρ² > 0.999`, which never fires for κ ≥ 0, and the same
+  goes for the rim fade.
+* **Tests** loop over `geom::tests::ALL`. `assert_isometry` checks both
+  forms, since for κ = 0 neither alone is enough (math §10.1).
+
+### 9.2 View and app
+
+* `View` carries its geometry, and `pannable` became a method. On the sphere
+  and the plane the whole screen is pannable; math §10.3 explains why the
+  spherical $T(p)$ stays bounded even near the antipode.
+* `Model::set_tiling` replaces the view when the geometry changes: an
+  isometry of one plane means nothing in another. Within a geometry the view
+  is kept, as in §4.2.
+* `Tiling::new` accepts every $3\le p,q\le32$. Stepping is now just ±1, and
+  every lattice dot is clickable. The title and the panel name the geometry.
+* The plane has no unit of length, so `EUCLIDEAN_RADIUS` fixes $|OV|=0.6$.
+  There is no zoom yet (exercise 4).
+
+### 9.3 A coloring that was wrong in the plane
+
+The first run gave every Euclidean tile the same color, while the spherical
+counts were exactly the faces of the Platonic solids. Printing `orbit_size`
+showed 1 for all three Euclidean tilings. The reason (math §10.6): with $B$
+singular, $v_0=n_a\times n_b$ is the radical of $2B$, which every reflection
+fixes.
+
+The fix colors by mirror coordinates, the transposed representation
+$\sigma_k^{\mathsf T}=I+n_ke_k^{\mathsf T}$ (math §8.2), for all three
+geometries:
+
+* The color is $\varphi(g)e_c$, which is column $c$ of the running product, so
+  the `v0` uniform became `ell`.
+* `reflect_right` and the shader now add $a\,n_k$ to column $k$, instead of
+  adding a multiple of column $k$ to every column. Still 9 multiply-adds. Each
+  of the three products is reduced before they are summed, so the sum stays
+  below $4\ell$.
+* For hyperbolic tilings the two representations are isomorphic, so the
+  color classes and counts are unchanged. The palette differs because the hash
+  inputs do. The sphere test now uses the dual form $\operatorname{adj}(2B)$.
+* Euclidean tilings get exactly $\ell^2$ colors, the torus
+  $\mathbb R^2/\ell\Lambda$ (`euclidean_colors_are_a_torus`).
+
+### 9.4 Checks
+
+* `fold_converges_within_cap` covers what can be on screen in each geometry.
+  The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
+  growing linearly with distance. The hyperbolic worst case is unchanged at 34.
+* Screenshots of all eight new tilings, and pans on the plane and the sphere,
+  using the XTest driver of §3.5 and the Immediate build of §11.3. Keys sent
+  150 ms apart sometimes went missing, or a screenshot showed the previous
+  tiling; half a second between steps made the run reliable. I did not track
+  down which of the two it was.
+* `cargo check --target wasm32-unknown-unknown`: nothing web-specific changed.
+
+---
+
+## 10. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -892,9 +974,9 @@ because there the browser offers no WebGPU implementation to delegate to.
 
 ---
 
-## 10. Workflow notes
+## 11. Workflow notes
 
-### 10.1 jj
+### 11.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -913,13 +995,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 10.2 Checks before each commit
+### 11.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 10.3 A throwaway verification build
+### 11.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -929,7 +1011,7 @@ snapshot into a commit.
 
 ---
 
-## 11. Exercises and extensions
+## 12. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.
@@ -941,6 +1023,8 @@ snapshot into a commit.
    angle to use when the pointer starts on the pivot.
 4. **Zoom.** Isometries cannot zoom. Instead change the disk radius in pixels
    beyond the window (`screen.z`), or switch to the upper half-plane model.
+   In the Euclidean plane zooming is a similarity and natural; cap it, since
+   fold sweeps grow linearly with the visible radius (§9.4).
 5. **A smaller web build.** Find where the 6.5 MB of wasm goes, for example
    with `twiggy top`. Then try `lto = true` and `opt-level = "s"` in a
    release profile, and a WebGPU-only build without the `webgl` feature.

@@ -1,5 +1,5 @@
+mod geom;
 mod gpu;
-mod hyp;
 mod quotient;
 mod tiling;
 mod ui;
@@ -84,7 +84,7 @@ impl Model {
             settings: Settings::default(),
             tiling,
             colors: tiling.quotient.orbit_size(),
-            view: View::new(),
+            view: View::new(tiling.geometry),
             cursor: None,
             modifiers: ModifiersState::empty(),
             drag: None,
@@ -98,10 +98,14 @@ impl Model {
             Some(n) => format!("{n} colors mod {ell}"),
             None => format!("colors mod {ell}"),
         };
-        format!("{{{},{}}} hyperbolic tiling, {colors}", t.p, t.q)
+        format!("{{{},{}}} {} tiling, {colors}", t.p, t.q, t.geometry.name())
     }
 
     fn set_tiling(&mut self, tiling: Tiling, window: &Window) {
+        // A view of one geometry means nothing in another.
+        if tiling.geometry != self.tiling.geometry {
+            self.view = View::new(tiling.geometry);
+        }
         self.tiling = tiling;
         self.colors = tiling.quotient.orbit_size();
         self.view.reset_colors();
@@ -120,7 +124,7 @@ impl Model {
                 Duration::ZERO
             }
             Some(Action::ResetView) => {
-                self.view = View::new();
+                self.view = View::new(self.tiling.geometry);
                 Duration::ZERO
             }
             None => out.repaint_after,
@@ -153,7 +157,7 @@ impl Model {
             }
             KeyCode::KeyC => self.settings.quotient_colors ^= true,
             KeyCode::KeyH => self.settings.show_panel ^= true,
-            KeyCode::KeyR => self.view = View::new(),
+            KeyCode::KeyR => self.view = View::new(self.tiling.geometry),
             _ => return,
         }
         window.request_redraw();
@@ -192,7 +196,9 @@ impl Model {
                 self.drag = match button {
                     MouseButton::Left if self.modifiers.shift_key() => Some(Drag::Rotate),
                     MouseButton::Left
-                        if self.cursor.is_some_and(|c| view::pannable(gfx.to_disk(c))) =>
+                        if self
+                            .cursor
+                            .is_some_and(|c| self.view.pannable(gfx.to_disk(c))) =>
                     {
                         Some(Drag::Pan)
                     }
@@ -207,7 +213,7 @@ impl Model {
                         Drag::Pan => {
                             self.view.pan(from, to);
                             // Past the rim the grabbed point can't follow; let go.
-                            if !view::pannable(to) {
+                            if !self.view.pannable(to) {
                                 self.drag = None;
                             }
                         }
