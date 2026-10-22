@@ -10,7 +10,7 @@ use winit::{event::WindowEvent, raw_window_handle::HasDisplayHandle, window::Win
 use crate::{
     geom::Geometry,
     gpu::Overlay,
-    tiling::{MAX_PQ, Tiling},
+    tiling::{Count, MAX_PQ, Tiling},
 };
 
 const USAGE: &str = "\
@@ -265,12 +265,24 @@ fn legend(ui: &mut Ui) {
     ui.small("p across, q up");
 }
 
-fn pairs() -> impl Iterator<Item = (u32, u32)> {
-    (3..=MAX_PQ).flat_map(|p| (3..=MAX_PQ).map(move |q| (p, q)))
+fn pairs() -> impl Iterator<Item = (Count, Count)> {
+    Count::all().flat_map(|p| Count::all().map(move |q| (p, q)))
+}
+
+/// How far ∞ is placed beyond MAX_PQ, in units of ln.
+const INF_GAP: f32 = 0.2;
+
+/// Position of `c` along an axis, in units of ln from 3.
+fn coord(c: Count) -> f32 {
+    match c {
+        Count::Finite(m) => (m as f32 / 3.0).ln(),
+        Count::Infinite => (MAX_PQ as f32 / 3.0).ln() + INF_GAP,
+    }
 }
 
 /// Positions in the {p,q} lattice: p across, q up, both on a log scale so that
-/// small values, where the geometry changes, get the most room.
+/// small values, where the geometry changes, get the most room; ∞ comes a
+/// little after MAX_PQ.
 struct Lattice {
     /// Position of {3,3}.
     origin: Pos2,
@@ -282,7 +294,7 @@ impl Lattice {
     fn new(plot: Rect) -> Self {
         Self {
             origin: plot.left_bottom(),
-            scale: plot.width().min(plot.height()) / (MAX_PQ as f32 / 3.0).ln(),
+            scale: plot.width().min(plot.height()) / coord(Count::Infinite),
         }
     }
 
@@ -290,16 +302,21 @@ impl Lattice {
         self.origin + self.scale * vec2((p / 3.0).ln(), -(q / 3.0).ln())
     }
 
-    fn at(&self, (p, q): (u32, u32)) -> Pos2 {
-        self.pos(p as f32, q as f32)
+    fn at(&self, (p, q): (Count, Count)) -> Pos2 {
+        self.origin + self.scale * vec2(coord(p), -coord(q))
     }
 
-    /// A fixed fraction of the local spacing, which is about scale / max(p, q).
-    fn radius(&self, (p, q): (u32, u32)) -> f32 {
-        (0.3 * self.scale / p.max(q) as f32).max(1.0)
+    /// A fixed fraction of the local spacing, which is about scale / max(p, q),
+    /// with ∞ counting as MAX_PQ.
+    fn radius(&self, (p, q): (Count, Count)) -> f32 {
+        let m = |c| match c {
+            Count::Finite(m) => m,
+            Count::Infinite => MAX_PQ,
+        };
+        (0.3 * self.scale / m(p).max(m(q)) as f32).max(1.0)
     }
 
-    fn nearest(&self, to: Pos2) -> (u32, u32) {
+    fn nearest(&self, to: Pos2) -> (Count, Count) {
         pairs()
             .min_by(|&a, &b| {
                 let d = |pq| self.at(pq).distance_sq(to);
@@ -311,7 +328,7 @@ impl Lattice {
 
 /// Draws the lattice with the current tiling marked; returns the {p,q}
 /// clicked, if any.
-fn lattice(ui: &mut Ui, tiling: &Tiling) -> Option<(u32, u32)> {
+fn lattice(ui: &mut Ui, tiling: &Tiling) -> Option<(Count, Count)> {
     let (response, painter) = ui.allocate_painter(Vec2::splat(LATTICE_PX), Sense::click());
     // Room for tick labels left and below, and for the largest dots.
     let rect = response.rect;
@@ -332,9 +349,11 @@ fn lattice(ui: &mut Ui, tiling: &Tiling) -> Option<(u32, u32)> {
     painter.line(curve, Stroke::new(1.0, weak));
 
     let font = FontId::proportional(10.0);
-    for n in [3, 4, 5, 6, 8, 12, 16, 24, 32] {
-        let below = Pos2::new(lat.at((n, 3)).x, lat.origin.y + 10.0);
-        let left = Pos2::new(lat.origin.x - 10.0, lat.at((3, n)).y);
+    let ticks = [3, 4, 5, 6, 8, 12, 16, 24, 32].map(Count::Finite);
+    for n in ticks.into_iter().chain([Count::Infinite]) {
+        let three = Count::Finite(3);
+        let below = Pos2::new(lat.at((n, three)).x, lat.origin.y + 10.0);
+        let left = Pos2::new(lat.origin.x - 10.0, lat.at((three, n)).y);
         painter.text(below, Align2::CENTER_TOP, n, font.clone(), weak);
         painter.text(left, Align2::RIGHT_CENTER, n, font.clone(), weak);
     }
@@ -382,11 +401,10 @@ mod tests {
         for pq in pairs() {
             assert_eq!(lat.nearest(lat.at(pq)), pq);
             let (p, q) = pq;
-            for next in [(p + 1, q), (p, q + 1)] {
-                if next.0 <= MAX_PQ && next.1 <= MAX_PQ {
-                    let gap = lat.at(pq).distance(lat.at(next));
-                    assert!(lat.radius(pq) + lat.radius(next) < gap, "{pq:?} {next:?}");
-                }
+            let next = [p.stepped(1).map(|p| (p, q)), q.stepped(1).map(|q| (p, q))];
+            for next in next.into_iter().flatten() {
+                let gap = lat.at(pq).distance(lat.at(next));
+                assert!(lat.radius(pq) + lat.radius(next) < gap, "{pq:?} {next:?}");
             }
         }
     }
@@ -394,8 +412,11 @@ mod tests {
     #[test]
     fn lattice_fills_its_plot() {
         let lat = lattice();
-        assert_eq!(lat.at((3, 3)), Pos2::new(22.0, LATTICE_PX - 22.0));
-        let top_right = lat.at((MAX_PQ, MAX_PQ));
+        assert_eq!(
+            lat.at((3.into(), 3.into())),
+            Pos2::new(22.0, LATTICE_PX - 22.0)
+        );
+        let top_right = lat.at((Count::Infinite, Count::Infinite));
         assert!((top_right.x - (LATTICE_PX - 6.0)).abs() < 1e-3);
         assert!((top_right.y - 6.0).abs() < 1e-3);
     }

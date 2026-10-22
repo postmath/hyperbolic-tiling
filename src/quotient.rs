@@ -12,8 +12,14 @@
 //! stabilizer of P, fixes e_c, and independent of the word chosen for g
 //! because φ is a homomorphism. Unlike the geometric representation itself,
 //! this works for Euclidean tilings too, where B is singular.
+//!
+//! For m = ∞ there is no relation to keep, and 2cos(π/∞) = 2 needs no ζ: an
+//! infinite p or q puts no condition on ℓ. The parabolic element ab or ac
+//! then has order ℓ in the quotient.
 
 use std::collections::HashSet;
+
+use crate::tiling::Count;
 
 /// Columns. Entries are < ℓ.
 pub type ModMat = [[u32; 3]; 3];
@@ -36,41 +42,47 @@ pub struct Quotient {
 pub const E_C: [u32; 3] = [0, 0, 1];
 
 impl Quotient {
-    /// `None` unless ℓ is a prime below MAX_ELL with ℓ ≡ 1 mod 2p and mod 2q
-    /// for which the reduced reflections satisfy the Coxeter relations.
-    pub fn new(p: u32, q: u32, ell: u32) -> Option<Self> {
+    /// `None` unless ℓ is an odd prime below MAX_ELL with ℓ ≡ 1 mod 2p and
+    /// mod 2q, for finite p and q, for which the reduced reflections satisfy
+    /// the Coxeter relations.
+    pub fn new(p: Count, q: Count, ell: u32) -> Option<Self> {
         if ell >= MAX_ELL
             || !is_prime(ell)
-            || !(ell - 1).is_multiple_of(2 * p)
-            || !(ell - 1).is_multiple_of(2 * q)
+            || !(ell - 1).is_multiple_of(modulus(p))
+            || !(ell - 1).is_multiple_of(modulus(q))
         {
             return None;
         }
         let g = primitive_root(ell);
-        let lambda = |m: u32| {
-            let z = pow(g, (ell - 1) / (2 * m), ell);
-            (z + pow(z, 2 * m - 1, ell)) % ell
+        let lambda = |m: Count| match m {
+            Count::Finite(m) => {
+                let z = pow(g, (ell - 1) / (2 * m), ell);
+                (z + pow(z, 2 * m - 1, ell)) % ell
+            }
+            Count::Infinite => 2 % ell,
         };
         let (lp, lq, m2) = (lambda(p), lambda(q), ell - 2);
         let n = [[m2, lp, lq], [lp, m2, 0], [lq, 0, m2]];
         let quot = Self { ell, n };
         let s = [0, 1, 2].map(|i| quot.reflect_right(IDENTITY, i));
-        let order_divides = |a: usize, b: usize, m: u32| {
+        let order_divides = |a: usize, b: usize, m: Count| {
+            let Count::Finite(m) = m else {
+                return true;
+            };
             let ab = quot.mul(s[a], s[b]);
             (0..m).fold(IDENTITY, |acc, _| quot.mul(acc, ab)) == IDENTITY
         };
-        let ok = order_divides(0, 0, 1)
-            && order_divides(1, 1, 1)
-            && order_divides(2, 2, 1)
-            && order_divides(0, 1, p)
-            && order_divides(0, 2, q)
-            && order_divides(1, 2, 2);
+        let ok = [(0, 0, 1.into()), (1, 1, 1.into()), (2, 2, 1.into())]
+            .into_iter()
+            .chain([(0, 1, p), (0, 2, q), (1, 2, 2.into())])
+            .all(|(a, b, m)| order_divides(a, b, m));
         ok.then_some(quot)
     }
 
     /// The admissible ℓ nearest to `ell` in direction `dir` (±1), excluding `ell`.
-    pub fn stepped(p: u32, q: u32, ell: u32, dir: i64) -> Option<Self> {
-        let step = 2 * p as i64 * q as i64 / gcd(p, q) as i64; // lcm(2p, 2q)
+    pub fn stepped(p: Count, q: Count, ell: u32, dir: i64) -> Option<Self> {
+        let (mp, mq) = (modulus(p), modulus(q));
+        let step = (mp * mq / gcd(mp, mq)) as i64;
         let mut cand = (ell as i64 - 1) / step * step + 1 + dir * step;
         while cand > 1 && cand < MAX_ELL as i64 {
             if let Some(quot) = Self::new(p, q, cand as u32) {
@@ -82,7 +94,7 @@ impl Quotient {
     }
 
     /// The smallest admissible ℓ.
-    pub fn first(p: u32, q: u32) -> Option<Self> {
+    pub fn first(p: Count, q: Count) -> Option<Self> {
         Self::stepped(p, q, 1, 1)
     }
 
@@ -117,6 +129,14 @@ impl Quotient {
             }
         }
         Some(seen.len())
+    }
+}
+
+/// ℓ - 1 must be a multiple of this.
+fn modulus(m: Count) -> u32 {
+    match m {
+        Count::Finite(m) => 2 * m,
+        Count::Infinite => 2,
     }
 }
 
@@ -168,31 +188,32 @@ fn primitive_root(ell: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tiling::{MAX_PQ, Tiling};
+    use crate::tiling::Count;
 
     #[test]
     fn every_tiling_has_a_quotient() {
-        for p in 3..=MAX_PQ {
-            for q in 3..=MAX_PQ {
-                if Tiling::new(p, q).is_some() {
-                    assert!(Quotient::first(p, q).is_some(), "{{{p},{q}}}");
-                }
+        for p in Count::all() {
+            for q in Count::all() {
+                assert!(Quotient::first(p, q).is_some(), "{{{p},{q}}}");
             }
         }
     }
 
     #[test]
     fn first_prime_for_7_3_is_43() {
-        let quot = Quotient::first(7, 3).unwrap();
+        let quot = Quotient::first(7.into(), 3.into()).unwrap();
         assert_eq!(quot.ell, 43);
-        assert_eq!(Quotient::stepped(7, 3, 43, -1).map(|q| q.ell), None);
-        assert!(Quotient::stepped(7, 3, 43, 1).unwrap().ell > 43);
+        assert_eq!(
+            Quotient::stepped(7.into(), 3.into(), 43, -1).map(|q| q.ell),
+            None
+        );
+        assert!(Quotient::stepped(7.into(), 3.into(), 43, 1).unwrap().ell > 43);
     }
 
     #[test]
     fn e_c_is_fixed_by_tile_stabilizer_only() {
         for (p, q) in [(7, 3), (4, 4), (5, 3)] {
-            let quot = Quotient::first(p, q).unwrap();
+            let quot = Quotient::first(p.into(), q.into()).unwrap();
             let s = |k| quot.apply(quot.reflect_right(IDENTITY, k), E_C);
             assert_eq!(s(0), E_C);
             assert_eq!(s(1), E_C);
@@ -204,8 +225,32 @@ mod tests {
     #[test]
     fn spherical_colors_are_the_tiles() {
         for (p, q, faces) in [(3, 3, 4), (3, 4, 8), (4, 3, 6), (3, 5, 20), (5, 3, 12)] {
-            let quot = Quotient::first(p, q).unwrap();
+            let quot = Quotient::first(p.into(), q.into()).unwrap();
             assert_eq!(quot.orbit_size(), Some(faces), "{{{p},{q}}}");
+        }
+    }
+
+    /// Δ(2,3,∞) is PGL(2,ℤ), and mod 7 its image is as large as PGL(2,𝔽₇).
+    /// So the quotient surface is the modular curve X(7), the Klein quartic,
+    /// made of 56 ideal triangles with 24 cusps. These are exactly the colors
+    /// of {3,∞} and of its dual {∞,3}.
+    #[test]
+    fn colors_mod_7_are_the_klein_quartic() {
+        let inf = Count::Infinite;
+        for (p, q, colors) in [(3.into(), inf, 56), (inf, 3.into(), 24)] {
+            let quot = Quotient::new(p, q, 7).unwrap();
+            let mut image = HashSet::from([IDENTITY]);
+            let mut todo = vec![IDENTITY];
+            while let Some(a) = todo.pop() {
+                for k in 0..3 {
+                    let b = quot.reflect_right(a, k);
+                    if image.insert(b) {
+                        todo.push(b);
+                    }
+                }
+            }
+            assert_eq!(image.len(), 7 * (7 * 7 - 1));
+            assert_eq!(quot.orbit_size(), Some(colors));
         }
     }
 
@@ -213,11 +258,11 @@ mod tests {
     #[test]
     fn euclidean_colors_are_a_torus() {
         for (p, q) in [(4, 4), (3, 6), (6, 3)] {
-            let mut quot = Quotient::first(p, q);
+            let mut quot = Quotient::first(p.into(), q.into());
             for _ in 0..3 {
                 let qu = quot.unwrap();
                 assert_eq!(qu.orbit_size(), Some(qu.ell as usize * qu.ell as usize));
-                quot = Quotient::stepped(p, q, qu.ell, 1);
+                quot = Quotient::stepped(p.into(), q.into(), qu.ell, 1);
             }
         }
     }
@@ -228,7 +273,7 @@ mod tests {
     #[test]
     fn colors_fill_a_sphere_of_the_invariant_form() {
         for (p, q) in [(7, 3), (3, 7), (5, 4), (4, 5), (8, 8)] {
-            let quot = Quotient::first(p, q).unwrap();
+            let quot = Quotient::first(p.into(), q.into()).unwrap();
             let ell = quot.ell;
             // adj(-2B) = adj(2B); N is symmetric, so its adjugate's columns
             // are cross products of its rows.

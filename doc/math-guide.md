@@ -12,6 +12,7 @@ hyperbolic geometry.
 Sections 1–9 develop the hyperbolic case. Section 10 extends the model, the
 picture and the colors to the Euclidean and spherical tilings, which the code
 handles in the same formulas, parametrized by the curvature $\kappa$.
+Section 11 adds infinite $p$ and $q$.
 
 Each section ends with the places in the code where the material is used,
 and with a few exercises. Formulas that appear in the code are marked
@@ -802,8 +803,10 @@ L key steps through admissible primes.
 | lines and dots swamp the rim | fixed pixel size vs exponentially shrinking tiles | cap at a fraction of the tile (`half_edge`) and fade below a pixel |
 | $M$ grows | $\|M\|\sim e^{d}$ | `settle` keeps $M^{-1}O\in D\cup aD$ |
 | $M$ drifts off $O(2,1)$ | rounding | refactor as $T(MO)\,R(\alpha)$ every update (§10.3) |
-| fold not converging | $\sim q/2$ sweeps near vertices | cap $p,q\le32$; 64 sweeps |
-| Euclidean fold sweeps | linear in the distance to the view centre | measured 20 at 4 disk radii, against the cap of 64 |
+| fold not converging | $\sim q/2$ sweeps near vertices | cap finite $p,q\le32$; 128 sweeps |
+| Euclidean fold sweeps | linear in the distance to the view centre | measured 20 at 4 disk radii |
+| fold near a cusp | $\sim2/(1-\rho^2)$ sweeps, unbounded | 128 sweeps cover the unfaded picture (§11.2) |
+| lines swamp a cusp | edges converge at an ideal vertex | also cap at a tenth of the cusp's local width (§11.2) |
 | color arithmetic overflow | products in u32 | $\ell<2^{16}$; each product $<\ell^2<2^{32}$ is reduced before adding |
 
 ---
@@ -1002,6 +1005,93 @@ never aliased (unit test: `length_per_disk_unit`).
 4. Show that in the gnomonic and Klein pictures ($\mu=0$) every line
    $c\cdot x=0$ appears as a straight line, and in the orthographic one as an
    ellipse or a hyperbola.
+
+---
+
+## 11. Infinite p and q
+
+With $\pi/\infty=0$, the fundamental triangle $(\pi/2,\pi/p,\pi/q)$ still
+exists for $p=\infty$ or $q=\infty$, and the tiling is hyperbolic: the
+condition $\frac1p+\frac1q<\frac12$ always holds. An angle of 0 means the two
+mirrors at that corner are **parallel**: they meet only at infinity, their
+Gram entry is $-\cos0=-1$, and the corner is an **ideal point** on the circle
+at infinity. The triangle still has finite area,
+$\frac\pi2-\frac\pi p-\frac\pi q$.
+
+* $q=\infty$: infinitely many tiles meet at each vertex, so the vertices are
+  ideal and the tiles are ideal regular $p$-gons. $\{3,\infty\}$ is the Farey
+  tessellation.
+* $p=\infty$: the tiles are regular **apeirogons**, with infinitely many
+  equal finite edges. Their vertices lie on a horocycle, and the tile's
+  "centre" $O$ is that horocycle's ideal point.
+* $\{\infty,\infty\}$: both. Only $E$ is a finite point.
+
+### 11.1 The frame
+
+For finite $p$ nothing changes: $O$ is the origin, and for $q=\infty$ the
+vertex $V=\text{meet}(a,c)$ is a null vector, which `meet` reports as `None`.
+For $p=\infty$ the origin cannot be the tile centre. The code then puts $E$,
+which is always finite, at the origin, with $c=(0,0,1)$ (the edge $VE$ along
+the $x_1$ axis) and $b=(0,1,0)$ ($OE$ along the $x_2$ axis, $O$ straight up). The
+Gram conditions $c_a^{\mathsf T}Kc_b=-\cos\frac\pi p$ and
+$c_a^{\mathsf T}Kc_c=-\cos\frac\pi q$ give
+$$c_a=\bigl(a_0,\ -\cos\tfrac\pi p,\ -\cos\tfrac\pi q\bigr),\qquad
+\kappa\,a_0^2=1-\cos^2\tfrac\pi p-\cos^2\tfrac\pi q,$$
+so $a_0=\cos\frac\pi q$ for $p=\infty$. $E$ lies inside $a$ because $a_0>0$. This
+frame would work for every $\{p,q\}$, but for finite $p$ the tile-centred view
+is nicer. **(code: `Tiling::new`)**
+
+### 11.2 The fold near a cusp
+
+Near an ideal corner the fold bounces between the two parallel mirrors.
+Their product is parabolic, a translation along horocycles, and each pair of
+reflections advances the point by one tile around the cusp. Seen from the
+cusp, the tiles around it have constant width along the horocycle while the
+point's horocyclic coordinate grows without bound. The sweep count therefore
+has no bound. In the Poincaré disk it grows like $2/(1-\rho^2)$: about 100
+sweeps where the rim fade starts at $\rho^2=0.98$, and 2000 at 0.999.
+
+`MAX_SWEEPS` became 128, which covers the unfaded picture. In the fade band
+near cusps the fold is cut off. The pixels there are wrong, but they are
+being blended into the background anyway. An exact fix would apply the
+parabolic element's power in closed form: it is unipotent, so
+$P^k=I+kN+\binom k2N^2$, and the same holds for its image mod $\ell$.
+
+The same narrowing affects the lines. Near an ideal $V$ edges converge from
+every direction, and a line half-width capped at a fixed fraction of the
+tile would cover the cusp in white. So for an ideal $V$ the cap is also a
+tenth of the cusp's local half-width, $d(t,a)+d(t,c)$ at the folded point
+$t$. The global cap needs a finite length too: half the edge is infinite, so
+it uses the distance from $E$ to $OV$ instead (`Tiling::size`).
+
+### 11.3 Colors: the modular group
+
+$2\cos\frac\pi\infty=2$ is an ordinary integer, so an infinite label puts no
+congruence condition on $\ell$, and there is no relation to check. The
+parabolic element has order $\ell$ in the quotient: $\varphi(ab)$ is
+unipotent, and $(I+N)^\ell=I$ in characteristic $\ell$. The tile stabilizer
+$\langle a,b\rangle$ of an apeirogon is infinite dihedral, and its image
+dihedral of order $2\ell$.
+
+$\Delta(2,3,\infty)$ is the extended modular group $PGL(2,\mathbb Z)$, acting
+on the Farey tessellation. Mod 7 its image has order $336=|PGL(2,\mathbb F_7)|$,
+consistent with the kernel being the principal congruence subgroup
+$\Gamma(7)$. The quotient surface is then the modular curve $X(7)$, which is
+the Klein quartic of §8.5 again, now cut into 56 ideal triangles with 24
+cusps. These are
+exactly the colors of $\{3,\infty\}$ (56) and of $\{\infty,3\}$ (24)
+(`colors_mod_7_are_the_klein_quartic`). For larger $\ell$ the counts follow
+§8.3 instead. For the primes I tried, $\{3,\infty\}$ gets $\ell(\ell+1)$ colors, a sphere of the
+invariant form, while the surface has $\ell(\ell^2-1)/6$ triangles; at
+$\ell=13$ each color covers two of them.
+
+**Exercises.**
+1. Show that the product of reflections in two parallel lines is parabolic:
+   it fixes their common ideal point and no other point of the closed disk.
+2. Implement the closed-form cusp step of §11.2 on the CPU, and check it
+   against `Tiling::fold` with a large `MAX_SWEEPS`.
+3. Show that around each ideal vertex of $\{3,\infty\}$ mod 7 the colors
+   repeat with period 7, the width of the cusps of $X(7)$.
 
 ---
 

@@ -61,7 +61,8 @@ Mouse and keyboard:
 | R | reset the view |
 | H | hide / show the panel |
 
-p and q range over 3..=32. The window title shows the current tiling, ℓ, and
+p and q range over 3..=32 and ∞: an infinite q gives ideal polygons, like the
+Farey tessellation {3,∞}, and an infinite p gives apeirogons. The window title shows the current tiling, ℓ, and
 the number of colors.
 
 ## Tests

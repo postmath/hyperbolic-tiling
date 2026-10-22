@@ -1,10 +1,10 @@
 struct U {
   m_inv: mat3x3<f32>,        // screen frame -> tiling frame
   mirrors: array<vec4<f32>, 3>,  // covectors c; see geom.rs
-  vert: vec4<f32>,           // xyz = V, w = half edge length |VE|
+  vert: vec4<f32>,           // xyz = V, w = Tiling::size
   screen: vec4<f32>,         // xy = resolution px, z = px per unit of disk radius
   proj: vec4<f32>,           // x = curvature κ, y = projection μ, z = 1 / rim2 or 0
-  style: vec4<f32>,          // x = line width px, y = vertex dot radius px, zw unused
+  style: vec4<f32>,          // x = line width px, y = vertex dot radius px, z = 1 if V is ideal, w unused
   // Tile colors (see quotient.rs): n_k of the reflections mod ℓ, the view's
   // color frame (columns), and x = ℓ or 0 for two-tone.
   cox: array<vec4<u32>, 3>,
@@ -13,7 +13,7 @@ struct U {
 };
 @group(0) @binding(0) var<uniform> u: U;
 
-const MAX_SWEEPS: i32 = 64;  // must match tiling::MAX_SWEEPS
+const MAX_SWEEPS: i32 = 128;  // must match tiling::MAX_SWEEPS
 
 // Kc for K = diag(κ, 1, 1): the reflection in line c is x -> x - 2(c·x)Kc.
 fn normal(c: vec3<f32>) -> vec3<f32> { return vec3<f32>(u.proj.x * c.x, c.yz); }
@@ -86,10 +86,15 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   let px = 2.0 * g * max(1.0, g / (a + b * x0)) / u.screen.z;
   // Lines and dots keep their pixel size but are capped to a fraction of the
   // tile near the rim, and fade out once sub-pixel; otherwise they swamp it.
-  let w = min(0.5 * u.style.x * px, 0.08 * u.vert.w);
+  // At an ideal V the tile narrows without bound, so lines are also capped to
+  // a fraction of the cusp's local half-width, the distance from OV to VE.
+  let d_edge = asin_k(abs(dot(t, u.mirrors[2].xyz)));
+  var w = min(0.5 * u.style.x * px, 0.08 * u.vert.w);
+  if (u.style.z > 0.0) {
+    w = min(w, 0.1 * (asin_k(dot(t, u.mirrors[0].xyz)) + d_edge));
+  }
   let r = min(u.style.y * px, 0.2 * u.vert.w);
 
-  let d_edge = asin_k(abs(dot(t, u.mirrors[2].xyz)));
   let dv = t - u.vert.xyz;
   let d_vert = 2.0 * asin_k(0.5 * sqrt(max(dot(dv, normal(dv)), 0.0)));  // via the chord
 

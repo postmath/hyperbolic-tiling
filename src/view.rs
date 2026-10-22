@@ -195,6 +195,30 @@ mod tests {
         }
     }
 
+    /// The same for apeirogons, whose triangles are the images of the
+    /// fundamental one under the infinite dihedral group ⟨a,b⟩.
+    #[test]
+    fn color_is_constant_on_apeirogons() {
+        use crate::tiling::Count::Infinite as INF;
+        for q in [3.into(), 8.into(), INF] {
+            let t = Tiling::new(INF, q).unwrap();
+            let g = t.geometry;
+            let v = View::new(g);
+            let [a, b, c] = t.mirrors.map(|m| g.reflect(m));
+            let x = g.disk_to_point(DVec2::new(0.02, 0.03), MU);
+            assert!(t.fold(x).word.is_empty());
+            let mut y = x;
+            for _ in 0..6 {
+                for z in [y, a * y] {
+                    let (_, _, color) = sample(&v, &t, g.point_to_disk(z, MU));
+                    assert_eq!(color, E_C);
+                }
+                y = a * b * y;
+            }
+            assert_ne!(sample(&v, &t, g.point_to_disk(c * x, MU)).2, E_C);
+        }
+    }
+
     #[test]
     fn rotate_follows_pointer_angle() {
         for g in ALL {

@@ -9,9 +9,11 @@
 
 use glam::{DMat3, DVec2, DVec3};
 
+use crate::tiling::Count;
+
 pub const ORIGIN: DVec3 = DVec3::X;
 
-/// The geometry a {p,q} tiling lives in, for p, q >= 3.
+/// The geometry a {p,q} tiling lives in, for p, q >= 3, possibly infinite.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Geometry {
     Spherical,
@@ -20,7 +22,10 @@ pub enum Geometry {
 }
 
 impl Geometry {
-    pub fn of(p: u32, q: u32) -> Self {
+    pub fn of(p: Count, q: Count) -> Self {
+        let (Count::Finite(p), Count::Finite(q)) = (p, q) else {
+            return Self::Hyperbolic;
+        };
         match ((p - 2) * (q - 2)).cmp(&4) {
             std::cmp::Ordering::Less => Self::Spherical,
             std::cmp::Ordering::Equal => Self::Euclidean,
@@ -73,10 +78,12 @@ impl Geometry {
         x / (x.x * x.x + self.kappa() * (x.y * x.y + x.z * x.z)).sqrt()
     }
 
-    /// Where lines a and b cross; on the origin's side if κ = 1.
-    pub fn meet(self, a: DVec3, b: DVec3) -> DVec3 {
+    /// Where lines a and b cross; on the origin's side if κ = 1. `None` if
+    /// they meet only at infinity, or not at all.
+    pub fn meet(self, a: DVec3, b: DVec3) -> Option<DVec3> {
         let x = a.cross(b);
-        self.normalize(x * x.x.signum())
+        let n = x.x * x.x + self.kappa() * (x.y * x.y + x.z * x.z);
+        (n > 1e-12 * x.length_squared()).then(|| self.normalize(x * x.x.signum()))
     }
 
     pub fn reflect(self, c: DVec3) -> DMat3 {
@@ -242,7 +249,7 @@ pub(crate) mod tests {
             assert_isometry(g, r, 1e-12);
             assert_mat_close(r * r, DMat3::IDENTITY, 1e-12);
             // Points on the line are fixed.
-            let x = g.meet(c, DVec3::Z);
+            let x = g.meet(c, DVec3::Z).unwrap();
             assert_close(r * x, x, 1e-12);
         }
     }

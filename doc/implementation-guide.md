@@ -222,7 +222,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §12.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §13.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -721,7 +721,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§11) that is acceptable.
+thousand ALU operations per pixel (§12) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -949,7 +949,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §12.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §13.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1023,16 +1023,89 @@ nothing.
 
 ---
 
-## 11. Precision and performance notes
+## 11. Milestone 11: infinite p and q
+
+Commit: *Support infinite p and q.* The mathematics is in math §11.
+
+### 11.1 A type for p and q
+
+`tiling::Count` is `Finite(m)` or `Infinite`, replacing `u32` for p and q.
+The arithmetic never sees the infinite case directly:
+
+* `Count::angle` is $\pi/m$, or 0. The construction only needs the sine and
+  cosine of that angle.
+* `Geometry::of` calls anything with an infinite count hyperbolic.
+* `Quotient` asks for $\ell\equiv1\pmod{2m}$ only for finite m, and uses
+  $\lambda_\infty=2$ with no relation to check.
+* `Count::all` lists 3..=32, then ∞. Stepping p or q with the keys, the
+  lattice picker and the tests all walk that list. `Display` prints ∞, so the
+  title and the panel needed no change.
+
+`Tiling::new` takes `impl Into<Count>`, so `Tiling::new(7, 3)` still works.
+
+### 11.2 Ideal corners
+
+`Geometry::meet` now returns `None` when the lines meet only at infinity: the
+cross product of their covectors is then a null vector, which cannot be
+normalized. That reports the ideal corners, and `Tiling::vert` became an
+`Option`.
+
+* **p = ∞** moves the frame: $E$ is the origin, with $VE$ along the $x_1$
+  axis and the ideal $O$ straight up (math §11.1). The view starts centred
+  on an edge midpoint.
+* **q = ∞** has no vertex dots. The uniform still gets a finite dummy vertex,
+  because the shader computes the dot's distance anyway. A NaN there would
+  survive the multiplication by a zero radius and turn the pixel NaN.
+* **The size cap** of §2.3 used half the edge, which is infinite for
+  q = ∞. `Tiling::size` keeps half the edge when it is finite and otherwise
+  uses the distance from $E$ to $OV$. That distance is finite in all cases,
+  but up to 5 times smaller than half the edge at large q, so it is not a
+  drop-in replacement for the finite cases.
+
+### 11.3 Cusps: the fold and the lines
+
+The first screenshot test failed on the sweep cap. Measured without a cap,
+cusps need about $2/(1-\rho^2)$ sweeps (math §11.2): 100 for {3,∞} at
+$\rho^2=0.98$, where the rim fade starts, and 2000 at 0.999. `MAX_SWEEPS` is
+now 128, and for infinite p or q, `fold_converges_within_cap` checks only
+the unfaded picture. Pixels in the fade band near a cusp fold incompletely
+but are mostly background by then. Pixels away from cusps still stop early,
+so the higher cap costs nothing there.
+
+The second screenshot showed white blobs at every ideal vertex: infinitely
+many edges converge, and the fixed size cap let each keep its pixel width
+until the cusp was solid white. For an ideal V the shader also caps a line's
+half-width at a tenth of the cusp's local half-width,
+$d(t,OV)+d(t,VE)$. `style.z` flags that case. Lines now thin out toward
+the cusp, and the cusp fades into a fan of tile colors.
+
+### 11.4 Colors and checks
+
+* `colors_mod_7_are_the_klein_quartic`: mod 7, {3,∞} has 56 colors and
+  {∞,3} has 24, and the image group has order 336. Printing those orders
+  before writing the test is what showed that the colors match $X(7)$ only
+  at ℓ = 7.
+* `color_is_constant_on_apeirogons` walks along an apeirogon with
+  $(ab)^k$, since its stabilizer is infinite.
+* The lattice picker has an ∞ row and column, `INF_GAP` beyond 32. The tests
+  check that its dots do not overlap their neighbours, including across
+  that gap.
+* Screenshots of {3,∞}, {∞,3}, {∞,∞} and {8,∞} in the Poincaré disk, of
+  {3,∞} and {∞,3} in the Klein disk, where the Farey triangles and the
+  apeirogons have straight edges, and a pan.
+
+---
+
+## 12. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
   frame from a well-conditioned f64 matrix, so errors do not accumulate frame
   to frame.
 * **Per-pixel cost** is dominated by the fold: up to ~35 sweeps of 3 dot
-  products, plus for colors about 12 integer ops per reflection. Even at the
-  rim this is a few thousand ALU ops per pixel, trivial for any GPU at
-  1080p. If it ever mattered, the first thing to try would be lowering
+  products for finite p and q, and up to the cap of 128 near cusps, plus for
+  colors about 12 integer ops per reflection. Even at the rim this is a few
+  thousand ALU ops per pixel, trivial for any GPU at 1080p. If it ever mattered, the first thing to try would be lowering
   `MAX_PQ` and `MAX_SWEEPS` together.
 * **Branch divergence** in the fold loop (neighbouring pixels needing
   different sweep counts) costs at most the slowest pixel's time per
@@ -1040,9 +1113,9 @@ nothing.
 
 ---
 
-## 12. Workflow notes
+## 13. Workflow notes
 
-### 12.1 jj
+### 13.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -1061,13 +1134,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 12.2 Checks before each commit
+### 13.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 12.3 A throwaway verification build
+### 13.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -1077,7 +1150,7 @@ snapshot into a commit.
 
 ---
 
-## 13. Exercises and extensions
+## 14. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.
@@ -1104,6 +1177,9 @@ snapshot into a commit.
    outside the sphere on the viewer's side (math §10.7), as a second slider
    range past λ = ∞. Check which root of the inverse map is now the visible
    one, and what `rim2` becomes.
+10. **Fast cusps.** Fold a point deep in a cusp in one step, using the closed
+    form of the parabolic element's power (math §11.2), here and mod ℓ.
+    Then drop `MAX_SWEEPS` back to 64 and check the fade band at the cusps.
 
 ---
 

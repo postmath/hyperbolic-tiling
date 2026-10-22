@@ -4,7 +4,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::DVec3;
 use winit::{event_loop::OwnedDisplayHandle, window::Window};
 
-use crate::{tiling::Tiling, ui::Settings, view::View};
+use crate::{geom::ORIGIN, tiling::Tiling, ui::Settings, view::View};
 
 /// Mirrors `struct U` in `tiling.wgsl`. Every member is 16-byte aligned, so
 /// there is no implicit padding.
@@ -15,12 +15,13 @@ pub struct Uniforms {
     pub m_inv: [[f32; 4]; 3],
     /// Covectors; w unused.
     pub mirrors: [[f32; 4]; 3],
+    /// xyz = V, w = `Tiling::size`.
     pub vert: [f32; 4],
     /// xy = resolution px, z = px per unit of disk radius; w unused.
     pub screen: [f32; 4],
     /// x = curvature κ, y = projection μ, z = 1 / rim2 (0 without a rim); w unused.
     pub proj: [f32; 4],
-    /// x = line width px, y = vertex dot radius px; zw unused.
+    /// x = line width px, y = vertex dot radius px, z = 1 if V is ideal; w unused.
     pub style: [f32; 4],
     /// n_k of the reduced reflections; w unused.
     pub cox: [[u32; 4]; 3],
@@ -39,10 +40,9 @@ impl Uniforms {
         Self {
             m_inv: [v4(m_inv.x_axis), v4(m_inv.y_axis), v4(m_inv.z_axis)],
             mirrors: tiling.mirrors.map(v4),
-            vert: tiling
-                .vert
-                .as_vec3()
-                .extend(tiling.half_edge as f32)
+            // Any finite point will do for an ideal V, which gets no dots.
+            vert: (tiling.vert.unwrap_or(ORIGIN).as_vec3())
+                .extend(tiling.size as f32)
                 .to_array(),
             screen: [w, h, r, 0.0],
             proj: [
@@ -51,7 +51,10 @@ impl Uniforms {
                 (1.0 / g.rim2(settings.mu)) as f32,
                 0.0,
             ],
-            style: [settings.line_px, settings.vertex_px, 0.0, 0.0],
+            style: match tiling.vert {
+                Some(_) => [settings.line_px, settings.vertex_px, 0.0, 0.0],
+                None => [settings.line_px, 0.0, 1.0, 0.0],
+            },
             cox: quot.n.map(u4),
             color_frame: view.color_frame.map(u4),
             ell: [
