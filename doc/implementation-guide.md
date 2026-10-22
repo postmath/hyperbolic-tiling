@@ -222,7 +222,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §13.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §14.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -721,7 +721,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§12) that is acceptable.
+thousand ALU operations per pixel (§13) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -949,7 +949,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §13.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §14.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1070,7 +1070,8 @@ $\rho^2=0.98$, where the rim fade starts, and 2000 at 0.999. `MAX_SWEEPS` is
 now 128, and for infinite p or q, `fold_converges_within_cap` checks only
 the unfaded picture. Pixels in the fade band near a cusp fold incompletely
 but are mostly background by then. Pixels away from cusps still stop early,
-so the higher cap costs nothing there.
+so the higher cap costs nothing there. Milestone 12 replaces the higher cap by a
+closed-form step through the cusp.
 
 The second screenshot showed white blobs at every ideal vertex: infinitely
 many edges converge, and the fixed size cap let each keep its pixel width
@@ -1096,15 +1097,90 @@ the cusp, and the cusp fades into a fan of tile colors.
 
 ---
 
-## 12. Precision and performance notes
+## 12. Milestone 12: cusps in one step
+
+Commit: *Fold cusps in one step and anti-alias their shading.* The
+mathematics is in math §11.2.
+
+### 12.1 What the report showed
+
+Dragging an apeirogon of {∞,3} until it filled the disk showed three faults:
+
+* **Moiré.** The apeirogon's triangles fan into its ideal centre, and its two
+  shades alternated with hard edges long after the triangles were thinner
+  than a pixel.
+* **Vertex dust.** The vertices pile up toward the cusp. Sub-pixel dots were
+  drawn with a coverage proportional to their radius.
+* **Flat regions,** one per shade, once panned deeper. With the view centre
+  deep in the cusp, most of the screen needed more than `MAX_SWEEPS`, and the
+  fold stopped part way.
+
+The first two were in the shading; the third was the fold. §11.3's cap of
+128 covered only a picture whose centre stays out of the cusps.
+
+### 12.2 The cusp step
+
+The fold now jumps through a cusp in closed form: the reflection in the k-th
+image of OV, then in OV. The k-th image is the unit covector
+$c_0-k(c_0+c_j)$. Two details mattered:
+
+* **The word holds lines, not mirror indices.** `tiling::Line` is a mirror
+  as integer coefficients of the three covectors, and `mirror(k)` is the
+  plain one. `View::settle` reflects in `Tiling::covector(line)`, and
+  `Quotient::reflect_right` takes any line, as $I+(N\alpha)\alpha^{\mathsf T}$.
+  Expanding the jump into k pairs of mirror indices would have made the
+  convergence test build words of millions of entries.
+* **Round k toward zero.** The first version used `floor`, and
+  `fold_converges_within_cap` hit the cap in the Klein view. A trace showed a
+  point on OV at $u=-8\cdot10^{-17}$: `floor` gave k = -1, and the ordinary
+  reflections brought it back. `trunc` leaves such points to the ordinary
+  reflections.
+
+The shader does the same in a loop over the two possible cusps. `mirrors[j].w`
+flags the mirrors parallel to OV, which also replaces §11.3's `style.z`.
+Guards keep k finite where h rounds to 0 at the rim, because WGSL may assume
+that there are no NaNs. The color update needs only `cox`, since N is
+symmetric.
+
+The test `cusp_steps_agree_with_single_reflections` folds points near the
+rim both ways, and compares the point, parity and color. With the step,
+`MAX_SWEEPS` is 64 again.
+
+### 12.3 How deep a pan may go
+
+Settling cannot bound M in a cusp. Deep in it, f32 loses about $\varepsilon/h^2$
+of the cusp's width $h$. `View::too_deep` reports a settled view centre with
+$h<3\cdot10^{-3}$, and `Model` then restores the view from before the motion
+event. `View` became `Copy` for that. The test
+`pans_into_a_cusp_stop_where_the_fold_still_works` drags toward each cusp
+until the limit engages, then checks the fold over the whole picture.
+
+### 12.4 Shading below a pixel
+
+* **Two shades.** They now blend to their mean within half a pixel of OV and
+  OE. That alone halved the moiré but left it visible, because a sample in the
+  middle of a one-pixel triangle still gets the full shade. The shades also
+  fade to the mean as the triangle's width across OV and OE drops from 2 px
+  to 1 px. This also anti-aliases the triangle edges of ordinary tilings,
+  and smooths the star at tile centres.
+* **Dots.** Coverage below a pixel now scales with the square of the radius,
+  like an area. Lines keep linear scaling, which is right for a width.
+
+Screenshots before and after, from the same drags, show the cusp's moiré and
+flat regions replaced by the mean shade, and far less dust at the rim.
+Ordinary tilings look the same.
+
+---
+
+## 13. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
   frame from a well-conditioned f64 matrix, so errors do not accumulate frame
   to frame.
 * **Per-pixel cost** is dominated by the fold: up to ~35 sweeps of 3 dot
-  products for finite p and q, and up to the cap of 128 near cusps, plus for
-  colors about 12 integer ops per reflection. Even at the rim this is a few
+  products, plus for colors about 12 integer ops per reflection, and for
+  infinite p or q a cusp step per sweep. Even at the rim this is a few
   thousand ALU ops per pixel, trivial for any GPU at 1080p. If it ever mattered, the first thing to try would be lowering
   `MAX_PQ` and `MAX_SWEEPS` together.
 * **Branch divergence** in the fold loop (neighbouring pixels needing
@@ -1113,9 +1189,9 @@ the cusp, and the cusp fades into a fan of tile colors.
 
 ---
 
-## 13. Workflow notes
+## 14. Workflow notes
 
-### 13.1 jj
+### 14.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -1134,13 +1210,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 13.2 Checks before each commit
+### 14.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 13.3 A throwaway verification build
+### 14.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -1150,7 +1226,7 @@ snapshot into a commit.
 
 ---
 
-## 14. Exercises and extensions
+## 15. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.
@@ -1177,9 +1253,10 @@ snapshot into a commit.
    outside the sphere on the viewer's side (math §10.7), as a second slider
    range past λ = ∞. Check which root of the inverse map is now the visible
    one, and what `rim2` becomes.
-10. **Fast cusps.** Fold a point deep in a cusp in one step, using the closed
-    form of the parabolic element's power (math §11.2), here and mod ℓ.
-    Then drop `MAX_SWEEPS` back to 64 and check the fade band at the cusps.
+10. **Tile colors below a pixel.** At a cusp of {3,∞} on the rim, tiles of
+    different colors become thinner than a pixel and their colors alias.
+    Blend toward a neighbour's color across VE, the way §12.4 blends the two
+    shades; the neighbour's color is one more reflection away.
 
 ---
 

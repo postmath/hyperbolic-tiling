@@ -12,11 +12,13 @@ use glam::DVec3;
 use crate::{geom::Geometry, quotient::Quotient};
 
 /// Fold sweeps over the three mirrors; must match `MAX_SWEEPS` in tiling.wgsl.
-/// Enough for the unfaded picture; see `fold_converges_within_cap`.
-pub const MAX_SWEEPS: u32 = 128;
+pub const MAX_SWEEPS: u32 = 64;
 /// Largest supported finite p and q. The fold needs more sweeps as p or q
 /// grows (about 35 at 32); see `fold_converges_within_cap`.
 pub const MAX_PQ: u32 = 32;
+/// Cusp steps beyond this are skipped, as they are in the shader, where k
+/// must fit an i32 and f32 has long lost the point anyway.
+const MAX_CUSP_STEP: f64 = 1e7;
 /// |OV| of Euclidean tilings, whose size is otherwise arbitrary. Close to that
 /// of the hyperbolic {7,3} and the spherical {3,5} and {5,3}.
 const EUCLIDEAN_RADIUS: f64 = 0.6;
@@ -80,12 +82,21 @@ pub struct Tiling {
     pub quotient: Quotient,
 }
 
+/// A line of the tiling as integer coefficients α of the mirrors: the line
+/// with covector Σ α_m c_m.
+pub type Line = [i64; 3];
+
+/// Mirror k as a `Line`.
+pub fn mirror(k: usize) -> Line {
+    std::array::from_fn(|m| (m == k) as i64)
+}
+
 // `point` and `sweeps` are only read by tests that replay the shader.
 #[cfg_attr(not(test), allow(dead_code))]
 pub struct Fold {
     pub point: DVec3,
-    /// Mirror indices in the order applied: point = r_last ... r_first x.
-    pub word: Vec<usize>,
+    /// The lines reflected in, in order: point = r_last ... r_first x.
+    pub word: Vec<Line>,
     pub sweeps: u32,
 }
 
@@ -143,16 +154,64 @@ impl Tiling {
         Some(Self { quotient, ..*self })
     }
 
+    pub fn covector(&self, line: Line) -> DVec3 {
+        (0..3).map(|m| line[m] as f64 * self.mirrors[m]).sum()
+    }
+
+    /// The mirrors j parallel to mirror 0, OV, meeting it at an ideal corner:
+    /// OE if p = ∞, VE if q = ∞.
+    pub fn cusps(&self) -> impl Iterator<Item = usize> {
+        [(1, self.p), (2, self.q)]
+            .into_iter()
+            .filter(|&(_, m)| m == Count::Infinite)
+            .map(|(j, _)| j)
+    }
+
+    /// The local width of the cusp between OV and mirror j at a point x of
+    /// the fundamental triangle: the sum of sin_κ of the distances to the
+    /// two, which is invariant under both reflections and goes to 0 deep in
+    /// the cusp.
+    pub fn cusp_width(&self, j: usize, x: DVec3) -> f64 {
+        x.dot(self.mirrors[0] + self.mirrors[j])
+    }
+
     /// Reflects `x` into the fundamental triangle, exactly as the shader does.
+    ///
+    /// Between OV and a parallel mirror j, the reflections act on
+    /// u = c_0·x like the infinite dihedral group on a line, fixing the
+    /// `cusp_width` h: the strip is 0 <= u <= h, and the translation
+    /// σ_0 σ_j moves u by -2h. Rather than bounce there, the fold applies its
+    /// k-th power at once, with k = u/2h rounded toward 0, which leaves
+    /// |u| < 2h for at most two single reflections. The power is the
+    /// reflection in the k-th image c_0 - k(c_0 + c_j) of OV followed by the
+    /// one in OV; that image is a unit covector too, since c_0 + c_j is null.
     pub fn fold(&self, x: DVec3) -> Fold {
         let (mut point, mut word) = (x, vec![]);
+        let mut reflect = |point: &mut DVec3, line: Line| {
+            let c = self.covector(line);
+            *point -= 2.0 * point.dot(c) * self.geometry.normal(c);
+            word.push(line);
+        };
         for sweeps in 0..MAX_SWEEPS {
             let mut changed = false;
+            for j in self.cusps() {
+                let (u, h) = (point.dot(self.mirrors[0]), self.cusp_width(j, point));
+                if h <= 0.0 || u.abs() >= 2.0 * h * MAX_CUSP_STEP {
+                    continue;
+                }
+                let k = (u / (2.0 * h)).trunc();
+                if k != 0.0 {
+                    let k = k as i64;
+                    let mut image = [1 - k, 0, 0];
+                    image[j] = -k;
+                    reflect(&mut point, image);
+                    reflect(&mut point, mirror(0));
+                    changed = true;
+                }
+            }
             for (k, c) in self.mirrors.into_iter().enumerate() {
-                let d = point.dot(c);
-                if d < 0.0 {
-                    point -= 2.0 * d * self.geometry.normal(c);
-                    word.push(k);
+                if point.dot(c) < 0.0 {
+                    reflect(&mut point, mirror(k));
                     changed = true;
                 }
             }
@@ -175,9 +234,12 @@ impl Tiling {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geom::{
-        ORIGIN,
-        tests::{MU, assert_close},
+    use crate::{
+        geom::{
+            ORIGIN,
+            tests::{MU, assert_close},
+        },
+        quotient::{E_C, IDENTITY},
     };
     use Count::{Finite as F, Infinite as INF};
     use glam::DVec2;
@@ -296,8 +358,8 @@ mod tests {
             assert!(f.sweeps < MAX_SWEEPS);
             let y = f.point;
             assert!(t.mirrors.iter().all(|&c| y.dot(c) >= -1e-9));
-            let replayed = f.word.iter().fold(x, |x, &k| g.reflect(t.mirrors[k]) * x);
-            assert_close(replayed, y, 1e-9);
+            let replayed = (f.word.iter()).fold(x, |x, &line| g.reflect(t.covector(line)) * x);
+            assert_close(replayed, y, 1e-9 * x.length());
         }
     }
 
@@ -306,11 +368,9 @@ mod tests {
     /// (where `View::settle` keeps it): the picture up to 0.999 of its rim2,
     /// or without a rim the sphere up to near the antipode, and a plane 4 disk
     /// radii across from the center. The Poincaré disk reaches farthest.
-    ///
-    /// Near an ideal corner the fold bounces between two parallel mirrors,
-    /// and the sweeps grow without bound, like 2/(1 - rho^2) in the Poincaré
-    /// disk. With p or q infinite only the unfaded picture, up to 0.98 of
-    /// rim2, is checked; the cap cuts off the fold in the fade band.
+    /// Near an ideal corner a plain fold would bounce between two parallel
+    /// mirrors, about 2/(1 - rho^2) times in the Poincaré disk; the cusp steps
+    /// replace that.
     #[test]
     fn fold_converges_within_cap() {
         for (p, q) in PAIRS {
@@ -321,10 +381,9 @@ mod tests {
                 .into_iter()
                 .flatten()
                 .collect();
-            let fraction = if p == INF || q == INF { 0.98 } else { 0.999 };
             for mu in [0.0, 0.5, 1.0] {
                 let rho = match g.rim2(mu) {
-                    rim2 if rim2.is_finite() => (fraction * rim2).sqrt(),
+                    rim2 if rim2.is_finite() => (0.999 * rim2).sqrt(),
                     _ if g == Geometry::Spherical => 100.0,
                     _ => 4.0,
                 };
@@ -343,6 +402,34 @@ mod tests {
                     .unwrap();
                 println!("{{{p},{q}}} μ = {mu}: worst {worst} sweeps");
                 assert!(worst < MAX_SWEEPS, "{{{p},{q}}} μ = {mu}: {worst}");
+            }
+        }
+    }
+
+    /// The cusp steps reach the same triangle and tile as reflecting one
+    /// mirror at a time: same point, parity and color.
+    #[test]
+    fn cusp_steps_agree_with_single_reflections() {
+        for (p, q) in [(F(3), INF), (INF, F(3)), (INF, INF)] {
+            let t = Tiling::new(p, q).unwrap();
+            let (g, quot) = (t.geometry, &t.quotient);
+            let color = |word: &[Line]| {
+                let a = (word.iter()).fold(IDENTITY, |a, &line| quot.reflect_right(a, line));
+                quot.apply(a, E_C)
+            };
+            for i in 0..64 {
+                let d = 0.99 * DVec2::from_angle(i as f64 * 0.1);
+                let x = g.disk_to_point(d, MU);
+                let f = t.fold(x);
+                // The same, one mirror at a time.
+                let (mut y, mut word) = (x, vec![]);
+                while let Some(k) = (0..3).find(|&k| y.dot(t.mirrors[k]) < 0.0) {
+                    y = g.reflect(t.mirrors[k]) * y;
+                    word.push(mirror(k));
+                }
+                assert_close(f.point, y, 1e-6);
+                assert_eq!(f.word.len() % 2, word.len() % 2);
+                assert_eq!(color(&f.word), color(&word), "{{{p},{q}}} {d}");
             }
         }
     }

@@ -209,6 +209,7 @@ impl Model {
             WindowEvent::CursorMoved { position, .. } => {
                 if let (Some(drag), Some(old)) = (self.drag, self.cursor) {
                     let (from, to) = (gfx.to_disk(old), gfx.to_disk(position));
+                    let before = self.view;
                     match drag {
                         Drag::Pan => {
                             self.view.pan(from, to, self.settings.mu);
@@ -220,6 +221,9 @@ impl Model {
                         Drag::Rotate => self.view.rotate(from, to),
                     }
                     self.view.settle(&self.tiling);
+                    if self.view.too_deep(&self.tiling) {
+                        self.view = before;
+                    }
                     gfx.window.request_redraw();
                 }
                 self.cursor = Some(position);

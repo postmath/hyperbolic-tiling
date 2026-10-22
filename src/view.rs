@@ -5,7 +5,7 @@ use glam::{DMat3, DVec2};
 use crate::{
     geom::{Geometry, ORIGIN, rotate},
     quotient::{self, ModMat},
-    tiling::Tiling,
+    tiling::{Tiling, mirror},
 };
 
 /// Pan drags hold points up to this fraction of the picture's rim2, where the
@@ -13,7 +13,12 @@ use crate::{
 const PAN_RIM2_FRACTION: f64 = 0.98;
 /// Rotate drags ignore pointers this close to the center, where the angle is noise.
 const ROTATE_RHO_MIN: f64 = 0.02;
+/// The narrowest `Tiling::cusp_width` at the view center that pans may reach.
+/// The shader's f32 loses about ε/width² of the width, 0.7% here, and the
+/// triangles at the center are already narrower than a pixel.
+const MIN_CUSP_WIDTH: f64 = 3e-3;
 
+#[derive(Clone, Copy)]
 pub struct View {
     pub geometry: Geometry,
     /// Tiling frame -> screen frame.
@@ -76,20 +81,30 @@ impl View {
 
     /// Re-expresses the same picture with the view center folded into the
     /// fundamental triangle, so M stays near the identity however far one pans,
-    /// then removes rounding drift from M.
+    /// except deep in a cusp, then removes rounding drift from M.
     /// With F = r_last ... r_first the fold, M becomes M F⁻¹ = M r_first ... r_last.
     pub fn settle(&mut self, tiling: &Tiling) {
         let g = self.geometry;
         let mut word = tiling.fold(self.m.inverse() * ORIGIN).word;
         if word.len() % 2 == 1 {
             // Odd elements swap the two triangle shades; one more mirror fixes that.
-            word.push(0);
+            word.push(mirror(0));
         }
-        for k in word {
-            self.m *= g.reflect(tiling.mirrors[k]);
-            self.color_frame = tiling.quotient.reflect_right(self.color_frame, k);
+        for line in word {
+            self.m *= g.reflect(tiling.covector(line));
+            self.color_frame = tiling.quotient.reflect_right(self.color_frame, line);
         }
         self.m = g.orthonormalize(self.m);
+    }
+
+    /// Whether the settled view center is deeper in a cusp than the shader
+    /// can follow. A cusp of the fundamental triangle is unbounded, so
+    /// settling cannot keep M bounded there; pans have to stop instead.
+    pub fn too_deep(&self, tiling: &Tiling) -> bool {
+        let center = self.m.inverse() * ORIGIN;
+        tiling
+            .cusps()
+            .any(|j| tiling.cusp_width(j, center) < MIN_CUSP_WIDTH)
     }
 }
 
@@ -134,7 +149,7 @@ mod tests {
         let acc = f
             .word
             .iter()
-            .fold(v.color_frame, |a, &k| quot.reflect_right(a, k));
+            .fold(v.color_frame, |a, &line| quot.reflect_right(a, line));
         (f.point, f.word.len() % 2, quot.apply(acc, E_C))
     }
 
@@ -216,6 +231,42 @@ mod tests {
                 y = a * b * y;
             }
             assert_ne!(sample(&v, &t, g.point_to_disk(c * x, MU)).2, E_C);
+        }
+    }
+
+    /// Panning into a cusp stops at MIN_CUSP_WIDTH, and there the whole
+    /// picture still folds within the cap, thanks to the cusp steps.
+    #[test]
+    fn pans_into_a_cusp_stop_where_the_fold_still_works() {
+        use crate::tiling::{Count::Infinite as INF, MAX_SWEEPS};
+        for (p, q) in [(INF, 3.into()), (3.into(), INF), (INF, INF)] {
+            let t = Tiling::new(p, q).unwrap();
+            let g = t.geometry;
+            for j in t.cusps() {
+                let ideal = t.mirrors[0].cross(t.mirrors[j]);
+                let mut v = View::new(g);
+                let stopped = (0..5000).any(|_| {
+                    // Drag a point between the center and the cusp to the center.
+                    let at = v.m * ideal;
+                    let toward = DVec2::new(at.y, at.z).normalize() * at.x.signum();
+                    let before = v;
+                    v.pan(0.05 * toward, DVec2::ZERO, MU);
+                    v.settle(&t);
+                    let deep = v.too_deep(&t);
+                    if deep {
+                        v = before;
+                    }
+                    deep
+                });
+                assert!(stopped, "{{{p},{q}}} cusp {j}");
+                let m_inv = v.m.inverse();
+                for i in 0..4096 {
+                    let d = 0.999f64.sqrt() * (i % 8 + 1) as f64 / 8.0
+                        * DVec2::from_angle(i as f64 * 0.0123);
+                    let f = t.fold(m_inv * g.disk_to_point(d, MU));
+                    assert!(f.sweeps < MAX_SWEEPS, "{{{p},{q}}} cusp {j} at {d}");
+                }
+            }
         }
     }
 

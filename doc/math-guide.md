@@ -803,9 +803,11 @@ L key steps through admissible primes.
 | lines and dots swamp the rim | fixed pixel size vs exponentially shrinking tiles | cap at a fraction of the tile (`half_edge`) and fade below a pixel |
 | $M$ grows | $\|M\|\sim e^{d}$ | `settle` keeps $M^{-1}O\in D\cup aD$ |
 | $M$ drifts off $O(2,1)$ | rounding | refactor as $T(MO)\,R(\alpha)$ every update (§10.3) |
-| fold not converging | $\sim q/2$ sweeps near vertices | cap finite $p,q\le32$; 128 sweeps |
+| fold not converging | $\sim q/2$ sweeps near vertices | cap finite $p,q\le32$; 64 sweeps |
 | Euclidean fold sweeps | linear in the distance to the view centre | measured 20 at 4 disk radii |
-| fold near a cusp | $\sim2/(1-\rho^2)$ sweeps, unbounded | 128 sweeps cover the unfaded picture (§11.2) |
+| fold near a cusp | $\sim2/(1-\rho^2)$ sweeps, unbounded | cusp step in closed form (§11.2) |
+| deep in a cusp | coordinates $\sim1/h$, cusp width $h$ | pans stop at $h=3\cdot10^{-3}$ (§11.2) |
+| shades alias in thin triangles | two tones alternate below a pixel | blend to the mean below 2 px (§11.2) |
 | lines swamp a cusp | edges converge at an ideal vertex | also cap at a tenth of the cusp's local width (§11.2) |
 | color arithmetic overflow | products in u32 | $\ell<2^{16}$; each product $<\ell^2<2^{32}$ is reduced before adding |
 
@@ -1043,26 +1045,63 @@ is nicer. **(code: `Tiling::new`)**
 
 ### 11.2 The fold near a cusp
 
-Near an ideal corner the fold bounces between the two parallel mirrors.
+Near an ideal corner a plain fold bounces between the two parallel mirrors.
 Their product is parabolic, a translation along horocycles, and each pair of
-reflections advances the point by one tile around the cusp. Seen from the
-cusp, the tiles around it have constant width along the horocycle while the
-point's horocyclic coordinate grows without bound. The sweep count therefore
-has no bound. In the Poincaré disk it grows like $2/(1-\rho^2)$: about 100
-sweeps where the rim fade starts at $\rho^2=0.98$, and 2000 at 0.999.
+reflections advances the point by one triangle around the cusp. The tiles
+around a cusp have constant width along each horocycle, while a point's
+horocyclic coordinate grows without bound, so the sweep count has no bound
+either. In the Poincaré disk it grows like $2/(1-\rho^2)$: about 100 sweeps
+where the rim fade starts at $\rho^2=0.98$, and 2000 at 0.999. Worse, panning
+toward the ideal point puts the whole screen in the cusp.
 
-`MAX_SWEEPS` became 128, which covers the unfaded picture. In the fade band
-near cusps the fold is cut off. The pixels there are wrong, but they are
-being blended into the background anyway. An exact fix would apply the
-parabolic element's power in closed form: it is unipotent, so
-$P^k=I+kN+\binom k2N^2$, and the same holds for its image mod $\ell$.
+**The cusp step.** Let $c_0$ be $OV$ and $c_j$ the mirror parallel to it, so
+$c_0^{\mathsf T}Kc_j=-1$ and $n=c_0+c_j$ is null. Write $u=c_0\cdot x$ and
+$h=n\cdot x$. Then:
 
-The same narrowing affects the lines. Near an ideal $V$ edges converge from
-every direction, and a line half-width capped at a fixed fraction of the
-tile would cover the cusp in white. So for an ideal $V$ the cap is also a
-tenth of the cusp's local half-width, $d(t,a)+d(t,c)$ at the folded point
-$t$. The global cap needs a finite length too: half the edge is infinite, so
-it uses the distance from $E$ to $OV$ instead (`Tiling::size`).
+* $h$ is invariant under both reflections, since $n^{\mathsf T}Kc_0=n^{\mathsf T}Kc_j=0$.
+  It is positive on the whole plane, and goes to 0 deep in the cusp; it is
+  the local width of the cusp (`Tiling::cusp_width`).
+* $\sigma_0$ sends $u\mapsto-u$ and $\sigma_j$ sends $u\mapsto2h-u$. So the two
+  act on $u$ like the infinite dihedral group on a line, with fundamental
+  interval $0\le u\le h$, and $\sigma_0\sigma_j$ translates $u$ by $-2h$.
+* The $k$-th power of that translation is $\sigma_0\sigma_{\ell_k}$, the
+  product of the reflections in $OV$ and in its $k$-th image
+  $\ell_k=c_0-k\,n$. That image is again a unit covector:
+  $\ell_k^{\mathsf T}K\ell_k=1-2k\,c_0^{\mathsf T}Kn+k^2n^{\mathsf T}Kn=1$.
+
+So the fold takes $k=u/2h$ rounded toward 0, and reflects in $\ell_k$ and then
+$c_0$. That leaves $|u|<2h$ for at most two ordinary reflections. Rounding
+toward 0 matters: with `floor`, a point lying on $OV$ with $u=-10^{-16}$ would
+jump to the far side, and the ordinary reflections would bring it back to
+$-10^{-16}$, forever. **(code: `Tiling::fold`, shader)**
+
+**Colors.** In mirror coordinates (§8.2), the reflection in a unit line
+$\sum_m\alpha_mc_m$ is $y\mapsto y-2(\alpha\cdot y)B\alpha$. So
+$\varphi=I+(N\alpha)\alpha^{\mathsf T}$ with $N=-2B$, which for a mirror
+$\alpha=e_k$ is the old $\sigma_k^{\mathsf T}$. For $\ell_k$,
+$\alpha=(1-k)e_0-k\,e_j$, whose entries reduce mod $\ell$. The tile's color is
+then exact, however large $k$ is. **(code: `Quotient::reflect_right`, which
+takes any line)**
+
+With the cusp step, the worst case is back to about 34 sweeps, and
+`MAX_SWEEPS` is 64 again.
+
+**How deep one can pan.** A cusp of $D$ is unbounded, so settling (§7.3)
+cannot keep $M$ bounded there: $M$ grows like $1/h$ at the view centre.
+Coordinates there are of size $1/h$, while the cusp is $h$ wide, so f32 keeps
+only about $\varepsilon/h^2$ of that width. Pans stop at $h=3\cdot10^{-3}$,
+which keeps 0.7% (`View::too_deep`). By then the triangles at the centre are
+narrower than a pixel, so going deeper would show only the mean tone.
+
+**Lines and shades.** Near an ideal $V$, edges converge from every
+direction, and lines capped at a fixed fraction of the tile would cover the
+cusp in white. So for an ideal $V$ the cap is also a tenth of the cusp's
+local half-width, $d(t,a)+d(t,c)$ at the folded point $t$. The global cap
+needs a finite length too: half the edge is infinite, so it uses the
+distance from $E$ to $OV$ instead (`Tiling::size`). The two triangle shades
+of a tile likewise blend to their mean where the triangle's width across
+$OV$ and $OE$ drops below two pixels. That covers both an ideal $O$ and the
+centre of an ordinary tile.
 
 ### 11.3 Colors: the modular group
 
@@ -1088,8 +1127,8 @@ $\ell=13$ each color covers two of them.
 **Exercises.**
 1. Show that the product of reflections in two parallel lines is parabolic:
    it fixes their common ideal point and no other point of the closed disk.
-2. Implement the closed-form cusp step of §11.2 on the CPU, and check it
-   against `Tiling::fold` with a large `MAX_SWEEPS`.
+2. Show that $\sigma_0\sigma_{\ell_k}=(\sigma_0\sigma_j)^k$ for
+   $\ell_k=c_0-k(c_0+c_j)$, first on $u$ and $h$, then as matrices.
 3. Show that around each ideal vertex of $\{3,\infty\}$ mod 7 the colors
    repeat with period 7, the width of the cusps of $X(7)$.
 

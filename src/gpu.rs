@@ -13,7 +13,7 @@ use crate::{geom::ORIGIN, tiling::Tiling, ui::Settings, view::View};
 pub struct Uniforms {
     /// Columns, each padded to vec4.
     pub m_inv: [[f32; 4]; 3],
-    /// Covectors; w unused.
+    /// xyz = covector, w = 1 if parallel to OV.
     pub mirrors: [[f32; 4]; 3],
     /// xyz = V, w = `Tiling::size`.
     pub vert: [f32; 4],
@@ -21,7 +21,7 @@ pub struct Uniforms {
     pub screen: [f32; 4],
     /// x = curvature κ, y = projection μ, z = 1 / rim2 (0 without a rim); w unused.
     pub proj: [f32; 4],
-    /// x = line width px, y = vertex dot radius px, z = 1 if V is ideal; w unused.
+    /// x = line width px, y = vertex dot radius px; zw unused.
     pub style: [f32; 4],
     /// n_k of the reduced reflections; w unused.
     pub cox: [[u32; 4]; 3],
@@ -39,7 +39,12 @@ impl Uniforms {
         let m_inv = view.m.inverse();
         Self {
             m_inv: [v4(m_inv.x_axis), v4(m_inv.y_axis), v4(m_inv.z_axis)],
-            mirrors: tiling.mirrors.map(v4),
+            mirrors: std::array::from_fn(|k| {
+                let parallel = tiling.cusps().any(|j| j == k);
+                (tiling.mirrors[k].as_vec3())
+                    .extend(parallel as u32 as f32)
+                    .to_array()
+            }),
             // Any finite point will do for an ideal V, which gets no dots.
             vert: (tiling.vert.unwrap_or(ORIGIN).as_vec3())
                 .extend(tiling.size as f32)
@@ -51,10 +56,16 @@ impl Uniforms {
                 (1.0 / g.rim2(settings.mu)) as f32,
                 0.0,
             ],
-            style: match tiling.vert {
-                Some(_) => [settings.line_px, settings.vertex_px, 0.0, 0.0],
-                None => [settings.line_px, 0.0, 1.0, 0.0],
-            },
+            style: [
+                settings.line_px,
+                if tiling.vert.is_some() {
+                    settings.vertex_px
+                } else {
+                    0.0
+                },
+                0.0,
+                0.0,
+            ],
             cox: quot.n.map(u4),
             color_frame: view.color_frame.map(u4),
             ell: [

@@ -19,7 +19,7 @@
 
 use std::collections::HashSet;
 
-use crate::tiling::Count;
+use crate::tiling::{Count, Line, mirror};
 
 /// Columns. Entries are < ℓ.
 pub type ModMat = [[u32; 3]; 3];
@@ -64,7 +64,7 @@ impl Quotient {
         let (lp, lq, m2) = (lambda(p), lambda(q), ell - 2);
         let n = [[m2, lp, lq], [lp, m2, 0], [lq, 0, m2]];
         let quot = Self { ell, n };
-        let s = [0, 1, 2].map(|i| quot.reflect_right(IDENTITY, i));
+        let s = [0, 1, 2].map(|i| quot.reflect_right(IDENTITY, mirror(i)));
         let order_divides = |a: usize, b: usize, m: Count| {
             let Count::Finite(m) = m else {
                 return true;
@@ -98,11 +98,14 @@ impl Quotient {
         Self::stepped(p, q, 1, 1)
     }
 
-    /// a · σ_k: column k gains a · n_k.
-    pub fn reflect_right(&self, a: ModMat, k: usize) -> ModMat {
-        let (mut b, an) = (a, self.apply(a, self.n[k]));
-        b[k] = [0, 1, 2].map(|r| (a[k][r] + an[r]) % self.ell);
-        b
+    /// a · φ(σ) for the reflection σ in `line`, Σ α_m c_m. In mirror
+    /// coordinates σ(y) = y - 2(α·y)Bα, so φ(σ) = I + (Nα)αᵀ with N = -2B,
+    /// and column m of a gains (a·Nα) α_m. For mirror k, column k gains a·n_k.
+    pub fn reflect_right(&self, a: ModMat, line: Line) -> ModMat {
+        let alpha = line.map(|x| x.rem_euclid(self.ell as i64) as u32);
+        // N is symmetric, so its rows n_m are also its columns.
+        let s = self.apply(a, self.apply(self.n, alpha));
+        std::array::from_fn(|m| [0, 1, 2].map(|r| (a[m][r] + s[r] * alpha[m]) % self.ell))
     }
 
     pub fn apply(&self, a: ModMat, v: [u32; 3]) -> [u32; 3] {
@@ -119,7 +122,7 @@ impl Quotient {
         let mut todo = vec![E_C];
         while let Some(v) = todo.pop() {
             for k in 0..3 {
-                let w = self.apply(self.reflect_right(IDENTITY, k), v);
+                let w = self.apply(self.reflect_right(IDENTITY, mirror(k)), v);
                 if seen.insert(w) {
                     if seen.len() > MAX_ORBIT {
                         return None;
@@ -188,7 +191,7 @@ fn primitive_root(ell: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tiling::Count;
+    use crate::tiling::{Count, mirror};
 
     #[test]
     fn every_tiling_has_a_quotient() {
@@ -214,7 +217,7 @@ mod tests {
     fn e_c_is_fixed_by_tile_stabilizer_only() {
         for (p, q) in [(7, 3), (4, 4), (5, 3)] {
             let quot = Quotient::first(p.into(), q.into()).unwrap();
-            let s = |k| quot.apply(quot.reflect_right(IDENTITY, k), E_C);
+            let s = |k| quot.apply(quot.reflect_right(IDENTITY, mirror(k)), E_C);
             assert_eq!(s(0), E_C);
             assert_eq!(s(1), E_C);
             assert_ne!(s(2), E_C);
@@ -243,7 +246,7 @@ mod tests {
             let mut todo = vec![IDENTITY];
             while let Some(a) = todo.pop() {
                 for k in 0..3 {
-                    let b = quot.reflect_right(a, k);
+                    let b = quot.reflect_right(a, mirror(k));
                     if image.insert(b) {
                         todo.push(b);
                     }
@@ -293,7 +296,7 @@ mod tests {
             let c = form(E_C);
             assert_ne!(c, 0);
             for k in 0..3 {
-                let s = quot.reflect_right(IDENTITY, k);
+                let s = quot.reflect_right(IDENTITY, mirror(k));
                 assert_eq!(form(quot.apply(s, [1, 2, 3])), form([1, 2, 3]));
             }
             let sphere = (0..ell.pow(3))
