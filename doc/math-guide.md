@@ -308,7 +308,9 @@ linear. The disk is only the final projection to pixels.
 
 Projecting from the origin instead, $(u,v)=(x_1,x_2)/x_0$, gives the Klein
 disk. Lines become straight chords, which is attractive, but the model is not
-conformal and angles are distorted. We use Poincaré.
+conformal and angles are distorted. Poincaré is the default; the panel can
+switch to Klein, or anything between Klein and the orthographic projection
+(§10.7).
 
 ### 3.5 Growth, and what it does to floating point
 
@@ -849,7 +851,8 @@ $x\mapsto Rx+t$ in homogeneous coordinates.
 
 ### 10.2 The picture
 
-Stereographic projection from $(-1,0,0)$ gives all three pictures:
+Stereographic projection from $(-1,0,0)$ gives all three pictures. It is
+the default; §10.7 moves the projection point.
 $$x=\frac{(1-\kappa\rho^2,\ 2u,\ 2v)}{1+\kappa\rho^2},\qquad(u,v)=\frac{(x_1,x_2)}{1+x_0}.\qquad\textbf{(code: `disk\_to\_point`, shader)}$$
 For $\kappa=-1$ this is §3.1. For $\kappa=1$ it is the usual stereographic
 projection of the sphere: the unit circle is the equator around the view
@@ -883,8 +886,9 @@ Then:
   $M$ is always orientation-preserving.
 
 A spherical pan can grab any point of the screen. $T(p)$ stays bounded:
-$\|\mathbf p\|^2/(1+p_0)=1-p_0\le2$. Only the hyperbolic disk needs the clamp
-of the implementation guide §3.3.
+$\|\mathbf p\|^2/(1+p_0)=1-p_0\le2$. Only a picture with a rim, the
+hyperbolic disk or the sphere's horizon (§10.7), needs the clamp of the
+implementation guide §3.3.
 
 ### 10.4 The triangle
 
@@ -938,12 +942,66 @@ $\sigma_c^{\mathsf T}$, because $(n_c)_c=-2$.
   tiles repeat every $\ell$ lattice steps, which in the plane you can actually
   pan to and see, unlike in the hyperbolic case.
 
+### 10.7 Other projection points
+
+Projecting from $(-\lambda,0,0)$ instead of $(-1,0,0)$ gives a family of
+pictures. The code parametrizes it by $\mu=\lambda/(1+\lambda)\in[0,1]$, so
+that $\lambda=\infty$ is reachable. Write $a=1-\mu$ and $b=\mu$, and scale the
+picture to agree with Poincaré's at the centre, where a distance $d$ appears
+as $|\mathbf u|\approx d/2$:
+$$\mathbf u=\frac{\mathbf x}{2(a\,x_0+b)}.$$
+
+| μ | λ | hyperbolic | spherical |
+|---|---|---|---|
+| 0 | 0 | Klein: geodesics are straight | gnomonic: great circles are straight |
+| 1/2 | 1 | Poincaré: conformal | stereographic: conformal |
+| 1 | ∞ | Gans: the whole plane | orthographic: a hemisphere |
+
+For $\kappa=0$ every μ gives the same picture, $\mathbf u=\mathbf x/2$.
+
+**Inverse (code: `disk\_to\_point`, shader).** With $s=4|\mathbf u|^2$, the
+point on the projecting line is
+$$x_0=\frac{\sqrt{1+\kappa s(a^2-b^2)}-\kappa s\,ab}{1+\kappa s\,a^2},\qquad \mathbf x=2\mathbf u\,(a\,x_0+b).$$
+The line can meet the surface twice; the root with $+\sqrt{\ }$ is always the
+one in the picture.
+
+**Which values make sense.** Since $|\mathbf x|=\sin_\kappa d$ and $x_0=\cos_\kappa d$,
+the radius is $|\mathbf u|=\sin_\kappa d\,/\,2(a\cos_\kappa d+b)$, and with
+$\cos_\kappa^2+\kappa\sin_\kappa^2=1$,
+$$\frac{d|\mathbf u|}{dd}=\frac{a+b\cos_\kappa d}{2(a\cos_\kappa d+b)^2}.$$
+The picture is one-to-one as long as $a+b\,x_0>0$, i.e. on the side
+$x_0>-1/\lambda$ of a **horizon**.
+
+* Hyperbolic: no horizon for $\lambda\ge0$. The whole plane fills a disk of
+  radius $1/2a=(1+\lambda)/2$: 1/2 for Klein, growing to the whole plane for
+  Gans. For $\lambda<0$ a horizon at $\cosh d=1/|\lambda|$ cuts it to a ball.
+* Spherical, $\lambda\le1$: the picture fills the plane with the cap
+  $x_0>-\lambda$, a hemisphere for gnomonic up to all but the antipode for
+  stereographic.
+* Spherical, $\lambda>1$: perspective from outside the sphere, looking through
+  it at the far side around $O$. The horizon $x_0=-1/\lambda$ is the circle
+  $\rho^2=1/4(b^2-a^2)$ (code: `rim2`), and pans are clamped inside it like
+  in the hyperbolic disk.
+* Spherical, $\lambda<-1$, is perspective from outside on $O$'s side: the
+  globe as seen from space, showing the cap $x_0>1/|\lambda|$. It joins the
+  family at $\lambda=\pm\infty$ but is not implemented.
+
+**Pixel size.** Only $\mu=1/2$ is conformal. One unit of $\mathbf u$ is
+$2(a x_0+b)$ long tangentially (circumference $2\pi\sin_\kappa d$ against
+$2\pi|\mathbf u|$), and $2(a x_0+b)^2/(a+b x_0)$ radially, by the derivative
+above. The two agree when $a=b$, giving $2/(1+\kappa\rho^2)$ again. The shader
+uses the larger, so lines are thinner than asked in the other direction, but
+never aliased (unit test: `length_per_disk_unit`).
+
 **Exercises.**
 1. Show that for $\kappa=0$, $M^{\mathsf T}PM=P$ alone allows shears, and
    $MKM^{\mathsf T}=K$ alone allows any first column.
 2. Check that $T(x)$ preserves both forms, using $x_0^2+\kappa\|\mathbf x\|^2=1$.
 3. For $\{4,4\}$ with $\ell=17$, find a translation $t\in\Lambda$ with
    $\varphi(t)=I$, and check that it moves a tile by 17 tiles.
+4. Show that in the gnomonic and Klein pictures ($\mu=0$) every line
+   $c\cdot x=0$ appears as a straight line, and in the orthographic one as an
+   ellipse or a hyperbola.
 
 ---
 

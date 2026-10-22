@@ -27,6 +27,8 @@ pub struct Settings {
     pub line_px: f32,
     /// Vertex dot radius.
     pub vertex_px: f32,
+    /// The projection, see `Geometry::disk_to_point`.
+    pub mu: f64,
     pub show_panel: bool,
 }
 
@@ -36,6 +38,7 @@ impl Default for Settings {
             quotient_colors: true,
             line_px: 1.5,
             vertex_px: 3.5,
+            mu: 0.5,
             show_panel: true,
         }
     }
@@ -170,6 +173,9 @@ fn panel(
     });
     ui.separator();
 
+    projection(ui, &mut settings.mu, tiling.geometry);
+    ui.separator();
+
     ui.add(Slider::new(&mut settings.line_px, 0.0..=5.0).text("Line width"));
     ui.add(Slider::new(&mut settings.vertex_px, 0.0..=10.0).text("Vertex size"));
     if ui.button("Reset view").clicked() {
@@ -177,6 +183,61 @@ fn panel(
     }
     ui.collapsing("Help", |ui| ui.label(USAGE));
     action
+}
+
+/// Projection presets with their μ; see `Geometry::disk_to_point`.
+fn presets(g: Geometry) -> [(&'static str, f64); 3] {
+    match g {
+        Geometry::Spherical => [
+            ("Gnomonic", 0.0),
+            ("Stereographic", 0.5),
+            ("Orthographic", 1.0),
+        ],
+        _ => [("Klein", 0.0), ("Poincaré", 0.5), ("Gans", 1.0)],
+    }
+}
+
+/// The slider runs over μ, which reaches λ = μ/(1-μ) = ∞; its number field
+/// shows and takes λ. Smart aim lands on exactly μ = 1/2 within a pixel of it.
+fn projection(ui: &mut Ui, mu: &mut f64, g: Geometry) {
+    ui.add_enabled_ui(g != Geometry::Euclidean, |ui| {
+        ui.horizontal(|ui| {
+            for (name, preset) in presets(g) {
+                ui.selectable_value(mu, preset, name);
+            }
+        });
+        ui.add(
+            Slider::new(mu, 0.0..=1.0)
+                .text("Projection λ")
+                .custom_formatter(|mu, _| lambda_text(mu))
+                .custom_parser(parse_lambda),
+        );
+    })
+    .response
+    .on_disabled_hover_text("All projections of the plane agree.");
+}
+
+fn lambda_text(mu: f64) -> String {
+    if mu >= 1.0 {
+        return "∞".into();
+    }
+    let s = format!("{:.3}", mu / (1.0 - mu));
+    s.trim_end_matches('0').trim_end_matches('.').into()
+}
+
+/// λ to μ.
+fn parse_lambda(s: &str) -> Option<f64> {
+    let s = s.trim();
+    let lambda = if s == "∞" {
+        f64::INFINITY
+    } else {
+        s.parse().ok()?
+    };
+    match lambda {
+        l if l == f64::INFINITY => Some(1.0),
+        l if l >= 0.0 => Some(l / (1.0 + l)),
+        _ => None,
+    }
 }
 
 /// Okabe–Ito colors, which stay distinct under common color blindness.
@@ -337,5 +398,15 @@ mod tests {
         let top_right = lat.at((MAX_PQ, MAX_PQ));
         assert!((top_right.x - (LATTICE_PX - 6.0)).abs() < 1e-3);
         assert!((top_right.y - 6.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn lambda_round_trips_through_text() {
+        for (mu, text) in [(0.0, "0"), (0.5, "1"), (0.75, "3"), (1.0, "∞")] {
+            assert_eq!(lambda_text(mu), text);
+            assert_eq!(parse_lambda(text), Some(mu));
+        }
+        assert_eq!(parse_lambda("inf"), Some(1.0));
+        assert_eq!(parse_lambda("-1"), None);
     }
 }

@@ -3,7 +3,8 @@
 An interactive viewer for regular tilings $\{p,q\}$, written in Rust with
 wgpu and winit. Hyperbolic tilings are shown in the Poincaré disk, Euclidean
 ones as a plane to pan over, and spherical ones (the Platonic solids) by
-stereographic projection of the sphere.
+stereographic projection of the sphere. The projection point can be moved,
+from the Klein and gnomonic projections to the Gans and orthographic ones.
 
 The whole picture is drawn by one fragment shader. Each pixel is mapped onto
 the hyperboloid, plane or sphere and reflected back into the fundamental triangle of the
@@ -41,6 +42,9 @@ A panel at the top left holds the main controls:
   and the dot colors tell hyperbolic, Euclidean and spherical pairs apart.
 * **Tile colors mod ℓ:** a toggle, plus a stepper for the prime ℓ and the
   resulting color count.
+* **Projection:** presets for the named projections, and a slider for the
+  projection point λ in between; type a value into its number field for an
+  exact one.
 * **Sliders** for line width and vertex size.
 * **Reset view.**
 

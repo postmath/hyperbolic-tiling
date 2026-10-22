@@ -16,8 +16,10 @@ pub struct Uniforms {
     /// Covectors; w unused.
     pub mirrors: [[f32; 4]; 3],
     pub vert: [f32; 4],
-    /// xy = resolution px, z = disk radius px, w = curvature κ.
+    /// xy = resolution px, z = px per unit of disk radius; w unused.
     pub screen: [f32; 4],
+    /// x = curvature κ, y = projection μ, z = 1 / rim2 (0 without a rim); w unused.
+    pub proj: [f32; 4],
     /// x = line width px, y = vertex dot radius px; zw unused.
     pub style: [f32; 4],
     /// n_k of the reduced reflections; w unused.
@@ -32,7 +34,7 @@ impl Uniforms {
     pub fn new(view: &View, tiling: &Tiling, [w, h, r]: [f32; 3], settings: &Settings) -> Self {
         let v4 = |v: DVec3| v.as_vec3().extend(0.0).to_array();
         let u4 = |[x, y, z]: [u32; 3]| [x, y, z, 0];
-        let quot = &tiling.quotient;
+        let (g, quot) = (tiling.geometry, &tiling.quotient);
         let m_inv = view.m.inverse();
         Self {
             m_inv: [v4(m_inv.x_axis), v4(m_inv.y_axis), v4(m_inv.z_axis)],
@@ -42,7 +44,13 @@ impl Uniforms {
                 .as_vec3()
                 .extend(tiling.half_edge as f32)
                 .to_array(),
-            screen: [w, h, r, tiling.geometry.kappa() as f32],
+            screen: [w, h, r, 0.0],
+            proj: [
+                g.kappa() as f32,
+                settings.mu as f32,
+                (1.0 / g.rim2(settings.mu)) as f32,
+                0.0,
+            ],
             style: [settings.line_px, settings.vertex_px, 0.0, 0.0],
             cox: quot.n.map(u4),
             color_frame: view.color_frame.map(u4),

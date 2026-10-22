@@ -8,9 +8,9 @@ use crate::{
     tiling::Tiling,
 };
 
-/// Hyperbolic pan drags hold points up to this rho^2, where the shader starts
-/// its rim fade. Elsewhere the whole screen is pannable.
-const PAN_RHO2_MAX: f64 = 0.98;
+/// Pan drags hold points up to this fraction of the picture's rim2, where the
+/// shader starts its rim fade. Without a rim the whole screen is pannable.
+const PAN_RIM2_FRACTION: f64 = 0.98;
 /// Rotate drags ignore pointers this close to the center, where the angle is noise.
 const ROTATE_RHO_MIN: f64 = 0.02;
 
@@ -38,23 +38,31 @@ impl View {
         self.color_frame = quotient::IDENTITY;
     }
 
-    /// Whether a pan drag can hold the point at disk position `d`.
-    pub fn pannable(&self, d: DVec2) -> bool {
-        self.geometry != Geometry::Hyperbolic || d.length_squared() <= PAN_RHO2_MAX
+    fn pan_rho2_max(&self, mu: f64) -> f64 {
+        PAN_RIM2_FRACTION * self.geometry.rim2(mu)
+    }
+
+    /// Whether a pan drag can hold the point at disk position `d`, in the
+    /// projection with parameter `mu` (see `Geometry::disk_to_point`).
+    pub fn pannable(&self, d: DVec2, mu: f64) -> bool {
+        d.length_squared() <= self.pan_rho2_max(mu)
     }
 
     /// Moves the picture so the point under disk position `from` ends up under
     /// `to`. Points beyond `pannable` are clamped to its edge.
-    pub fn pan(&mut self, from: DVec2, to: DVec2) {
+    pub fn pan(&mut self, from: DVec2, to: DVec2, mu: f64) {
         let clamp = |d: DVec2| {
-            if self.pannable(d) {
+            if self.pannable(d, mu) {
                 d
             } else {
-                d.normalize() * PAN_RHO2_MAX.sqrt()
+                d.normalize() * self.pan_rho2_max(mu).sqrt()
             }
         };
         let g = self.geometry;
-        let (p, q) = (g.disk_to_point(clamp(from)), g.disk_to_point(clamp(to)));
+        let (p, q) = (
+            g.disk_to_point(clamp(from), mu),
+            g.disk_to_point(clamp(to), mu),
+        );
         self.m = g.translate(p, q) * self.m;
     }
 
@@ -89,7 +97,7 @@ impl View {
 mod tests {
     use super::*;
     use crate::{
-        geom::tests::{ALL, assert_isometry},
+        geom::tests::{ALL, MU, MUS, assert_isometry, in_picture},
         quotient::E_C,
     };
     use std::f64::consts::PI;
@@ -100,25 +108,28 @@ mod tests {
     #[test]
     fn grabbed_point_stays_under_cursor() {
         for g in ALL {
-            let mut v = View::new(g);
-            let path = [
-                DVec2::new(0.1, 0.2),
-                DVec2::new(-0.3, 0.5),
-                DVec2::new(0.6, -0.4),
-            ];
-            let grabbed = v.m.inverse() * g.disk_to_point(path[0]);
-            for w in path.windows(2) {
-                v.pan(w[0], w[1]);
+            for mu in MUS {
+                let mut v = View::new(g);
+                let path = [
+                    DVec2::new(0.1, 0.2),
+                    DVec2::new(-0.3, 0.5),
+                    DVec2::new(0.6, -0.4),
+                ]
+                .map(|d| in_picture(g, mu, d));
+                let grabbed = v.m.inverse() * g.disk_to_point(path[0], mu);
+                for w in path.windows(2) {
+                    v.pan(w[0], w[1], mu);
+                }
+                let d = g.point_to_disk(v.m * grabbed, mu);
+                assert!((d - path[2]).length() < 1e-9);
             }
-            let d = g.point_to_disk(v.m * grabbed);
-            assert!((d - path[2]).length() < 1e-9);
         }
     }
 
     /// Folded tiling point, parity and tile color under screen point `d`, as
     /// the shader computes them.
     fn sample(v: &View, t: &Tiling, d: DVec2) -> (glam::DVec3, usize, [u32; 3]) {
-        let f = t.fold(v.m.inverse() * t.geometry.disk_to_point(d));
+        let f = t.fold(v.m.inverse() * t.geometry.disk_to_point(d, MU));
         let quot = &t.quotient;
         let acc = f
             .word
@@ -143,11 +154,11 @@ mod tests {
             for i in 0..3000 {
                 let a = 0.3 * (i as f64 * 0.01).sin();
                 let (from, to) = (DVec2::ZERO, DVec2::from_angle(a) * 0.05);
-                settled.pan(from, to);
+                settled.pan(from, to, MU);
                 settled.rotate(DVec2::X * 0.5, DVec2::from_angle(0.01) * 0.5);
                 settled.settle(&t);
                 if i < 50 {
-                    raw.pan(from, to);
+                    raw.pan(from, to, MU);
                     raw.rotate(DVec2::X * 0.5, DVec2::from_angle(0.01) * 0.5);
                 }
                 if i == 49 {
@@ -178,7 +189,8 @@ mod tests {
             let at = |i: u32| DVec2::from_angle((i as f64 + 0.5) * PI / p as f64) * 0.1;
             let colors: Vec<_> = (0..2 * p).map(|i| sample(&v, &t, at(i)).2).collect();
             assert!(colors.iter().all(|&c| c == E_C));
-            let across_edge = g.point_to_disk(g.reflect(t.mirrors[2]) * g.disk_to_point(at(0)));
+            let across_edge =
+                g.point_to_disk(g.reflect(t.mirrors[2]) * g.disk_to_point(at(0), MU), MU);
             assert_ne!(sample(&v, &t, across_edge).2, E_C);
         }
     }
@@ -188,7 +200,7 @@ mod tests {
         for g in ALL {
             let mut v = View::new(g);
             v.rotate(DVec2::new(0.5, 0.0), DVec2::new(0.0, 0.3));
-            let d = g.point_to_disk(v.m * g.disk_to_point(DVec2::new(0.4, 0.0)));
+            let d = g.point_to_disk(v.m * g.disk_to_point(DVec2::new(0.4, 0.0), MU), MU);
             assert!((d - DVec2::new(0.0, 0.4)).length() < 1e-12);
         }
     }

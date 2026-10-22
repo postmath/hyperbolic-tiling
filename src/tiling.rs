@@ -113,7 +113,10 @@ impl Tiling {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geom::{ORIGIN, tests::assert_close};
+    use crate::geom::{
+        ORIGIN,
+        tests::{MU, assert_close},
+    };
     use glam::DVec2;
 
     const PAIRS: [(u32, u32); 16] = [
@@ -203,7 +206,7 @@ mod tests {
         for (p, q) in PAIRS {
             let t = Tiling::new(p, q).unwrap();
             let g = t.geometry;
-            let x = g.disk_to_point(DVec2::new(0.6, -0.7));
+            let x = g.disk_to_point(DVec2::new(0.6, -0.7), MU);
             let f = t.fold(x);
             assert!(f.sweeps < MAX_SWEEPS);
             let y = f.point;
@@ -215,34 +218,37 @@ mod tests {
 
     /// Worst case of the shader's fold cap over what can be on screen, with
     /// the view centered on each corner of the fundamental triangle (where
-    /// `View::settle` keeps it): the disk up to rho^2 = 0.999, the whole sphere
-    /// but the antipode, and a plane 4 disk radii across from the center.
+    /// `View::settle` keeps it): the picture up to 0.999 of its rim2, or
+    /// without a rim the sphere up to near the antipode, and a plane 4 disk
+    /// radii across from the center. The Poincaré disk reaches farthest.
     #[test]
     fn fold_converges_within_cap() {
         for (p, q) in PAIRS {
             let t = Tiling::new(p, q).unwrap();
             let g = t.geometry;
-            let rho = match g {
-                Geometry::Spherical => 100.0,
-                Geometry::Euclidean => 4.0,
-                Geometry::Hyperbolic => 0.999f64.sqrt(),
-            };
             let e = g.meet(t.mirrors[1], t.mirrors[2]);
-            let worst = [ORIGIN, t.vert, e]
-                .into_iter()
-                .flat_map(|center| {
-                    let m_inv = g.translate(ORIGIN, center);
-                    (0..4096).flat_map(move |i| (1..=8).map(move |r| (m_inv, i, r)))
-                })
-                .map(|(m_inv, i, r)| {
-                    let a = i as f64 / 4096.0 * 2.0 * PI;
-                    let d = rho * r as f64 / 8.0 * DVec2::from_angle(a);
-                    t.fold(m_inv * g.disk_to_point(d)).sweeps
-                })
-                .max()
-                .unwrap();
-            println!("{{{p},{q}}}: worst {worst} sweeps");
-            assert!(worst < MAX_SWEEPS, "{{{p},{q}}}: {worst}");
+            for mu in [0.0, 0.5, 1.0] {
+                let rho = match g.rim2(mu) {
+                    rim2 if rim2.is_finite() => (0.999 * rim2).sqrt(),
+                    _ if g == Geometry::Spherical => 100.0,
+                    _ => 4.0,
+                };
+                let worst = [ORIGIN, t.vert, e]
+                    .into_iter()
+                    .flat_map(|center| {
+                        let m_inv = g.translate(ORIGIN, center);
+                        (0..4096).flat_map(move |i| (1..=8).map(move |r| (m_inv, i, r)))
+                    })
+                    .map(|(m_inv, i, r)| {
+                        let a = i as f64 / 4096.0 * 2.0 * PI;
+                        let d = rho * r as f64 / 8.0 * DVec2::from_angle(a);
+                        t.fold(m_inv * g.disk_to_point(d, mu)).sweeps
+                    })
+                    .max()
+                    .unwrap();
+                println!("{{{p},{q}}} μ = {mu}: worst {worst} sweeps");
+                assert!(worst < MAX_SWEEPS, "{{{p},{q}}} μ = {mu}: {worst}");
+            }
         }
     }
 }

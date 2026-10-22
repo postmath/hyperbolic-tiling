@@ -33,7 +33,7 @@ What happens per input event and per frame:
 2. The handler calls `window.request_redraw()`. Nothing renders
    continuously; the app is idle unless something changes.
 3. On `RedrawRequested`, `App::paint` lays out the egui panel and applies
-   any change made there. `App::uniforms` packs the state into a 256-byte
+   any change made there. `App::uniforms` packs the state into a 272-byte
    `Uniforms` value: $M^{-1}$ and the mirrors as f32, color data as u32.
    `Renderer::render` uploads it, draws one fullscreen triangle, and draws
    the panel on top.
@@ -222,7 +222,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §11.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §12.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -721,7 +721,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§10) that is acceptable.
+thousand ALU operations per pixel (§11) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -949,7 +949,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §11.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §12.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -957,7 +957,73 @@ geometries:
 
 ---
 
-## 10. Precision and performance notes
+## 10. Milestone 10: the projection point
+
+Commit: *Make the projection point variable, from Klein to Gans.* The
+mathematics is in math §10.7.
+
+### 10.1 One more parameter
+
+`Geometry::disk_to_point` takes μ, with the projection from $(-\lambda,0,0)$
+for $\lambda=\mu/(1-\mu)$. Working in μ rather than λ keeps every formula
+finite at λ = ∞, the Gans and orthographic projections. The scale at the
+centre stays that of Poincaré, so panning near the centre feels the same for
+every μ, and Euclidean pictures do not change at all.
+
+* `Geometry::rim2` is where the picture ends: the hyperbolic disk's rim,
+  which now has radius $(1+\lambda)/2$, or the sphere's horizon for λ > 1. It
+  replaces the fixed $\rho^2<1$ in three places: `View::pannable` (now 0.98 of
+  `rim2`), the pan clamp, and the shader's cut-off and fade. The shader gets
+  its reciprocal, 0 when there is no rim, because WGSL does not promise
+  infinities in uniforms.
+* μ lives in `Settings`, like the line width, and is passed to `pan` and
+  `pannable`. Changing it does not touch $M$.
+* The uniforms gained a `proj` vec4: κ, μ and $1/\text{rim2}$. κ moved there
+  from `screen.w`. `Uniforms` grew to 272 bytes, and the layout test of §2.1
+  confirmed both sides agree.
+
+### 10.2 Pixels that are not square
+
+Away from μ = 1/2 the projection is not conformal, so one pixel no longer
+has a single length in the model. The shader computes the tangential and
+radial lengths analytically (math §10.7) and uses the larger. The test
+`length_per_disk_unit` checks both formulas against finite differences of
+`disk_to_point` and `dist`. That is the CPU side of a shader formula, the same
+pattern as the fold replica in §2.4.
+
+`fold_converges_within_cap` now also runs at μ = 0 and μ = 1. The Poincaré
+disk still reaches farthest into the plane, so the worst case is unchanged.
+
+### 10.3 Choosing μ in the panel
+
+A slider over μ cannot easily hit μ = 1/2 by dragging. Two things make the
+named projections exact:
+
+* **Smart aim.** egui's `Slider` is on by default and, while dragging, picks
+  the simplest decimal within the pointer's pixel
+  (`emath::smart_aim::best_in_range_f64`). The pixel containing μ = 1/2
+  therefore gives exactly 0.5. Snapping, or a mapping that is flat at
+  λ = 1, would have made a dead zone instead.
+* **Presets.** `selectable_value` buttons for the three named projections of
+  each geometry: Klein, Poincaré and Gans, or gnomonic, stereographic and
+  orthographic. The current one is highlighted.
+
+The slider's number field shows λ, not μ, via `custom_formatter`, and accepts
+typed λ via `custom_parser`, including `inf` and `∞`. A throwaway test in the
+style of §7.1 confirmed that the default fonts have ∞, λ and μ. For Euclidean
+tilings the whole group is disabled, with a tooltip saying why.
+
+### 10.4 Checks
+
+Screenshots of Klein, Gans and an intermediate λ for {7,3}; of gnomonic,
+orthographic and a far-side perspective (λ ≈ 5.7, with its horizon) for
+{5,3}; and of pans in the Klein disk and the orthographic hemisphere. A pan
+that starts outside the Klein disk, which is now half as wide, correctly does
+nothing.
+
+---
+
+## 11. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -974,9 +1040,9 @@ geometries:
 
 ---
 
-## 11. Workflow notes
+## 12. Workflow notes
 
-### 11.1 jj
+### 12.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -995,13 +1061,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 11.2 Checks before each commit
+### 12.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 11.3 A throwaway verification build
+### 12.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -1011,7 +1077,7 @@ snapshot into a commit.
 
 ---
 
-## 12. Exercises and extensions
+## 13. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.
@@ -1034,6 +1100,10 @@ snapshot into a commit.
    `Features::TIMESTAMP_QUERY` and compare $\{3,32\}$ with $\{7,3\}$.
 8. **Ramified primes.** Try ℓ = 7 for $\{7,3\}$ (math §8.5). The relation
    check in `Quotient::new` will tell you whether the naive reduction works.
+9. **The globe.** Add the spherical projections with λ < -1, perspective from
+   outside the sphere on the viewer's side (math §10.7), as a second slider
+   range past λ = ∞. Check which root of the inverse map is now the visible
+   one, and what `rim2` becomes.
 
 ---
 

@@ -196,9 +196,9 @@ impl Model {
                 self.drag = match button {
                     MouseButton::Left if self.modifiers.shift_key() => Some(Drag::Rotate),
                     MouseButton::Left
-                        if self
-                            .cursor
-                            .is_some_and(|c| self.view.pannable(gfx.to_disk(c))) =>
+                        if self.cursor.is_some_and(|c| {
+                            self.view.pannable(gfx.to_disk(c), self.settings.mu)
+                        }) =>
                     {
                         Some(Drag::Pan)
                     }
@@ -211,9 +211,9 @@ impl Model {
                     let (from, to) = (gfx.to_disk(old), gfx.to_disk(position));
                     match drag {
                         Drag::Pan => {
-                            self.view.pan(from, to);
+                            self.view.pan(from, to, self.settings.mu);
                             // Past the rim the grabbed point can't follow; let go.
-                            if !self.view.pannable(to) {
+                            if !self.view.pannable(to, self.settings.mu) {
                                 self.drag = None;
                             }
                         }

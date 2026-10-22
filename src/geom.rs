@@ -88,16 +88,35 @@ impl Geometry {
         )
     }
 
-    /// Stereographic projection from (-1, 0, 0), inverted: the Poincaré disk
-    /// for κ = -1, the plane itself (scaled by 2) for κ = 0.
-    pub fn disk_to_point(self, d: DVec2) -> DVec3 {
-        let kr2 = self.kappa() * d.length_squared();
-        DVec3::new(1.0 - kr2, 2.0 * d.x, 2.0 * d.y) / (1.0 + kr2)
+    /// Projection from (-λ, 0, 0), λ = μ/(1-μ), inverted, and scaled to match
+    /// at the origin: μ = 0 is the Klein or gnomonic projection, μ = 1/2 the
+    /// Poincaré or stereographic one, μ = 1 the Gans or orthographic one. For
+    /// κ = 0 every μ gives the plane itself, scaled by 2. Of the two points on
+    /// the projecting line this picks the one shown, inside `rim2`.
+    pub fn disk_to_point(self, d: DVec2, mu: f64) -> DVec3 {
+        let (a, b) = (1.0 - mu, mu);
+        let ks = self.kappa() * 4.0 * d.length_squared();
+        let x0 = ((1.0 + ks * (a * a - b * b)).max(0.0).sqrt() - ks * a * b) / (1.0 + ks * a * a);
+        let x = 2.0 * d * (a * x0 + b);
+        DVec3::new(x0, x.x, x.y)
     }
 
     #[cfg(test)]
-    pub fn point_to_disk(self, x: DVec3) -> DVec2 {
-        DVec2::new(x.y, x.z) / (1.0 + x.x)
+    pub fn point_to_disk(self, x: DVec3, mu: f64) -> DVec2 {
+        DVec2::new(x.y, x.z) / (2.0 * ((1.0 - mu) * x.x + mu))
+    }
+
+    /// ρ² at the edge of the picture of `disk_to_point`: the rim of the
+    /// hyperbolic disk, or for μ > 1/2 the horizon of the sphere. Infinite if
+    /// the picture fills the plane.
+    pub fn rim2(self, mu: f64) -> f64 {
+        let (a, b) = (1.0 - mu, mu);
+        let inv = match self {
+            Self::Spherical => b * b - a * a,
+            Self::Euclidean => 0.0,
+            Self::Hyperbolic => a * a,
+        };
+        0.25 / inv.max(0.0)
     }
 
     /// Translation carrying the origin to x along their geodesic. Needs x0 > -1.
@@ -145,6 +164,16 @@ pub(crate) mod tests {
         Geometry::Hyperbolic,
     ];
 
+    /// Projection parameters: Klein, Poincaré, Gans and two in between.
+    pub const MUS: [f64; 5] = [0.0, 0.3, 0.5, 0.8, 1.0];
+    /// Poincaré, for tests about something else.
+    pub const MU: f64 = 0.5;
+
+    /// `d` relative to the rim of the picture, if there is one.
+    pub fn in_picture(g: Geometry, mu: f64, d: DVec2) -> DVec2 {
+        d * g.rim2(mu).min(1.0).sqrt()
+    }
+
     pub fn assert_close(a: DVec3, b: DVec3, tol: f64) {
         assert!((a - b).abs().max_element() <= tol, "{a} != {b}");
     }
@@ -171,10 +200,35 @@ pub(crate) mod tests {
     #[test]
     fn disk_round_trip() {
         for g in ALL {
-            for d in [DVec2::ZERO, DVec2::new(0.3, -0.5), DVec2::new(-0.7, 0.69)] {
-                let x = g.disk_to_point(d);
-                assert!(on_surface(g, x));
-                assert!((g.point_to_disk(x) - d).length() < 1e-12);
+            for mu in MUS {
+                for d in [DVec2::ZERO, DVec2::new(0.3, -0.5), DVec2::new(-0.7, 0.69)] {
+                    let d = in_picture(g, mu, d);
+                    let x = g.disk_to_point(d, mu);
+                    assert!(on_surface(g, x));
+                    assert!((g.point_to_disk(x, mu) - d).length() < 1e-12);
+                    // Before the horizon, where the projection is one-to-one.
+                    assert!(1.0 - mu + mu * x.x > 0.0);
+                }
+            }
+        }
+    }
+
+    /// The shader's pixel size: model length per unit of disk radius,
+    /// tangentially 2(a x0 + b) and radially 2(a x0 + b)²/(a + b x0), for
+    /// a = 1 - μ, b = μ.
+    #[test]
+    fn length_per_disk_unit() {
+        let h = 1e-6;
+        for g in ALL {
+            for mu in MUS {
+                let (a, b) = (1.0 - mu, mu);
+                let d = in_picture(g, mu, DVec2::new(0.3, 0.4));
+                let x = g.disk_to_point(d, mu);
+                let along = |dir: DVec2| g.dist(x, g.disk_to_point(d + h * dir, mu)) / h;
+                let tangential = 2.0 * (a * x.x + b);
+                let radial = tangential * (a * x.x + b) / (a + b * x.x);
+                assert!((along(d.perp().normalize()) - tangential).abs() < 1e-5);
+                assert!((along(d.normalize()) - radial).abs() < 1e-5);
             }
         }
     }
@@ -196,7 +250,7 @@ pub(crate) mod tests {
     #[test]
     fn distance_to_line_is_asin_of_covector() {
         for g in ALL {
-            let x = g.disk_to_point(DVec2::new(0.0, 0.3));
+            let x = g.disk_to_point(DVec2::new(0.0, 0.3), MU);
             // The x1 axis, and the foot of the perpendicular from x.
             assert!((g.asin(DVec3::Z.dot(x)) - g.dist(x, ORIGIN)).abs() < 1e-12);
         }
@@ -211,8 +265,8 @@ mod motion_tests {
     #[test]
     fn translate_carries_p_to_q() {
         for g in ALL {
-            let p = g.disk_to_point(DVec2::new(0.2, -0.4));
-            let q = g.disk_to_point(DVec2::new(-0.6, 0.1));
+            let p = g.disk_to_point(DVec2::new(0.2, -0.4), MU);
+            let q = g.disk_to_point(DVec2::new(-0.6, 0.1), MU);
             let t = g.translate(p, q);
             assert_close(t * p, q, 1e-9);
             assert_isometry(g, t, 1e-9);
@@ -225,7 +279,7 @@ mod motion_tests {
     #[test]
     fn orthonormalize_repairs_drift() {
         for g in ALL {
-            let m = g.translate(ORIGIN, g.disk_to_point(DVec2::new(0.3, 0.4))) * rotate(1.0);
+            let m = g.translate(ORIGIN, g.disk_to_point(DVec2::new(0.3, 0.4), MU)) * rotate(1.0);
             let noisy =
                 m + DMat3::from_cols_array(&[1e-6, -2e-6, 3e-6, 0.0, 1e-6, 0.0, -1e-6, 0.0, 2e-6]);
             let fixed = g.orthonormalize(noisy);
@@ -240,8 +294,10 @@ mod motion_tests {
         for g in ALL {
             let r = rotate(std::f64::consts::FRAC_PI_2);
             assert_isometry(g, r, 1e-12);
-            let d = g.point_to_disk(r * g.disk_to_point(DVec2::new(0.5, 0.0)));
-            assert!((d - DVec2::new(0.0, 0.5)).length() < 1e-12);
+            for mu in MUS {
+                let x = r * g.disk_to_point(DVec2::new(0.2, 0.0), mu);
+                assert!((g.point_to_disk(x, mu) - DVec2::new(0.0, 0.2)).length() < 1e-12);
+            }
         }
     }
 }
