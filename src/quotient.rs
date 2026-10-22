@@ -39,7 +39,10 @@ impl Quotient {
     /// `None` unless ℓ is a prime below MAX_ELL with ℓ ≡ 1 mod 2p and mod 2q
     /// for which the reduced reflections satisfy the Coxeter relations.
     pub fn new(p: u32, q: u32, ell: u32) -> Option<Self> {
-        if ell >= MAX_ELL || !is_prime(ell) || (ell - 1) % (2 * p) != 0 || (ell - 1) % (2 * q) != 0
+        if ell >= MAX_ELL
+            || !is_prime(ell)
+            || !(ell - 1).is_multiple_of(2 * p)
+            || !(ell - 1).is_multiple_of(2 * q)
         {
             return None;
         }
@@ -130,7 +133,10 @@ fn pow(mut b: u32, mut e: u32, ell: u32) -> u32 {
 }
 
 fn is_prime(n: u32) -> bool {
-    n >= 2 && (2..).take_while(|d| d * d <= n).all(|d| n % d != 0)
+    n >= 2
+        && (2..)
+            .take_while(|d| d * d <= n)
+            .all(|d| !n.is_multiple_of(d))
 }
 
 fn gcd(a: u32, b: u32) -> u32 {
@@ -144,9 +150,9 @@ fn primitive_root(ell: u32) -> u32 {
         if d * d > m {
             break;
         }
-        if m % d == 0 {
+        if m.is_multiple_of(d) {
             factors.push(d);
-            while m % d == 0 {
+            while m.is_multiple_of(d) {
                 m /= d;
             }
         }
