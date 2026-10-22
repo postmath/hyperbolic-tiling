@@ -807,6 +807,7 @@ L key steps through admissible primes.
 | Euclidean fold sweeps | linear in the distance to the view centre | measured 20 at 4 disk radii |
 | fold near a cusp | $\sim2/(1-\rho^2)$ sweeps, unbounded | cusp step in closed form (§11.2) |
 | deep in a cusp | coordinates $\sim1/h$, cusp width $h$ | pans stop at $h=3\cdot10^{-3}$ (§11.2) |
+| pixels deeper than the centre | error $\delta(1+\lvert u\rvert/h)$ in the strip | fade features below 3–6 times it (§11.2) |
 | shades alias in thin triangles | two tones alternate below a pixel | blend to the mean below 2 px (§11.2) |
 | lines swamp a cusp | edges converge at an ideal vertex | also cap at a tenth of the cusp's local width (§11.2) |
 | color arithmetic overflow | products in u32 | $\ell<2^{16}$; each product $<\ell^2<2^{32}$ is reduced before adding |
@@ -1092,6 +1093,15 @@ Coordinates there are of size $1/h$, while the cusp is $h$ wide, so f32 keeps
 only about $\varepsilon/h^2$ of that width. Pans stop at $h=3\cdot10^{-3}$,
 which keeps 0.7% (`View::too_deep`). By then the triangles at the centre are
 narrower than a pixel, so going deeper would show only the mean tone.
+
+Pixels toward the ideal point are deeper than the centre, and the jump
+amplifies their error. With $u$ and $h$ off by
+$\delta\approx\varepsilon\|M^{-1}\|\,|p|$, the place $u-2kh$ in the strip is
+off by about $\delta(1+|u|/h)$. So each pixel estimates its own resolution,
+and the shader fades out lines, dots and shades where $h$ is below 3 to 6
+times that error, a margin calibrated against an f64 fold. Such pixels near
+an ideal $O$ lie in the central apeirogon (they are inside its horoball
+$h<h(E)$), so they still get its colour.
 
 **Lines and shades.** Near an ideal $V$, edges converge from every
 direction, and lines capped at a fixed fraction of the tile would cover the

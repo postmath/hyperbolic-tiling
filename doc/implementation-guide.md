@@ -222,7 +222,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §14.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §15.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -721,7 +721,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§13) that is acceptable.
+thousand ALU operations per pixel (§14) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -949,7 +949,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §14.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §15.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1168,11 +1168,72 @@ until the limit engages, then checks the fold over the whole picture.
 
 Screenshots before and after, from the same drags, show the cusp's moiré and
 flat regions replaced by the mean shade, and far less dust at the rim.
-Ordinary tilings look the same.
+Ordinary tilings look the same. Some dust remained, and milestone 13 shows
+it was not what it seemed.
 
 ---
 
-## 13. Precision and performance notes
+## 13. Milestone 13: what f32 cannot resolve
+
+Commit: *Hide what f32 cannot resolve deep in a cusp.* The mathematics is in
+math §11.2.
+
+### 13.1 Dust that was not vertices
+
+After milestone 12, panning into an apeirogon of {∞,27} still left a band
+of yellow specks near the rim on the side of the ideal centre O. I had taken
+such specks for real vertices, drawn at a pixel's size. They were not. That
+band lies inside the central apeirogon, where there are no vertices, and at
+$\rho^2\approx0.9$ a real dot would be several pixels wide, never a single
+one. The pan limit of §12.3 bounds the cusp's depth at the view centre, but
+pixels toward O are much deeper still, and there f32 loses them.
+
+### 13.2 A per-pixel test
+
+Each pixel estimates how well f32 resolves it, from quantities it already
+has. The fold places it at $u-2kh$ in the cusp's strip. $u$ and $h$ carry a
+rounding error $\delta\approx\varepsilon\|M^{-1}\|\,|p|$, which the jump
+multiplies by $k\approx|u|/2h$, so the place is off by about
+$\delta(1+|u|/h)$. Where $h$ is not well above that, `trust` fades out the
+lines, dots and two shades.
+
+The first version compared $h$ with $\delta$ alone, and removed only the
+dust right next to O. The second added the factor for $k$ and demanded a
+margin of 16, which removed all the dust but also correct shading over half
+the disk. The margin was then calibrated. A scratch test built a view at the
+pan limit and folded a 60×60 grid of pixels twice, in f64 and in an f32
+replica of the shader. It tabulated the wrong answers against the ratio of
+$h$ to the error:
+
+| ratio | wrong parity | wrong dot |
+|---|---|---|
+| < 0.2 | about half | 2–15% |
+| 0.5–1.2 | 9–21% | 1–3% |
+| 1.2–2.5 | 2% | 1% |
+| > 2.5 | 2% | none |
+
+So `trust` now ramps from 0 at a ratio of 3 to 1 at 6, judged by the dots,
+the dust in question; a few parity errors remain above that. The calibration was a throwaway test: it needs an f32 replica of the
+fold, which would be a second copy of the shader to keep in step.
+
+### 13.3 The colour of a lost pixel
+
+The lines, dots and shades can fade, but every pixel needs a tile colour.
+For an ideal O, pixels whose cusp width is below its value at E lie in the
+central apeirogon. `deep_in_an_ideal_center_is_the_central_apeirogon`
+checks this: their fold reflects only in lines through O. So such pixels
+take the central apeirogon's colour, `color_frame` applied to $e_c$, whatever
+the fold found. Lost pixels elsewhere keep whatever colour the fold found.
+They are sub-pixel tiles at the rim, where no single colour is right.
+
+After the change, the same drags leave 21 yellow pixels out of about 10,000.
+The ones left sit on the apeirogon's boundary at the rim, where the f32 and
+f64 folds agree. They are pixel-sized because the dot cap is a fifth of the
+half edge, which for {∞,27} is 2.84, ten times that of {7,3}.
+
+---
+
+## 14. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -1189,9 +1250,9 @@ Ordinary tilings look the same.
 
 ---
 
-## 14. Workflow notes
+## 15. Workflow notes
 
-### 14.1 jj
+### 15.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -1210,13 +1271,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 14.2 Checks before each commit
+### 15.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 14.3 A throwaway verification build
+### 15.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -1226,7 +1287,7 @@ snapshot into a commit.
 
 ---
 
-## 15. Exercises and extensions
+## 16. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.

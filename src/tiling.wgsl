@@ -15,6 +15,7 @@ struct U {
 
 const MAX_SWEEPS: i32 = 64;  // must match tiling::MAX_SWEEPS
 const MAX_CUSP_STEP: f32 = 1e7;  // must match tiling::MAX_CUSP_STEP
+const ULP: f32 = 1.2e-7;  // of f32 at 1
 
 // Kc for K = diag(κ, 1, 1): the reflection in line c is x -> x - 2(c·x)Kc.
 fn normal(c: vec3<f32>) -> vec3<f32> { return vec3<f32>(u.proj.x * c.x, c.yz); }
@@ -57,7 +58,33 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   let ks = u.proj.x * 4.0 * dot(uv, uv);
   let x0 = (sqrt(max(1.0 + ks * (a*a - b*b), 0.0)) - ks * a * b) / (1.0 + ks * a * a);
   let g = a * x0 + b;
-  var t = u.m_inv * vec3<f32>(x0, 2.0 * g * uv);
+  let p = vec3<f32>(x0, 2.0 * g * uv);
+  var t = u.m_inv * p;
+
+  // In a cusp f32 may not resolve the pixel. The fold finds the pixel's
+  // place u - 2kh in the cusp's strip of width h, with u = c_0·t and
+  // h = (c_0 + c_j)·t, k = u/2h. Both carry a rounding error δ of about
+  // ε‖M⁻¹‖|p|, so that place is off by δ(1 + |u|/h). Where that is not well
+  // below h, `trust` fades out what the fold finds; compared with an f64
+  // fold, f32 misplaces vertex dots only below h = 2.5 δ(1 + |u|/h), so the
+  // fade runs from 3 to 6 times that. Pixels that deep in the
+  // cusp of an ideal O lie in the central apeirogon, whose color is known
+  // (test: deep_in_an_ideal_center_is_the_central_apeirogon).
+  let mi = max(abs(u.m_inv[0]), max(abs(u.m_inv[1]), abs(u.m_inv[2])));
+  let delta = 4.0 * ULP * max(mi.x, max(mi.y, mi.z)) * max(abs(p.x), max(abs(p.y), abs(p.z)));
+  var trust = vec2<f32>(1.0);  // in the cusps at O and at V
+  var central = false;
+  for (var j = 1; j < 3; j++) {
+    if (u.mirrors[j].w > 0.0) {
+      let n = u.mirrors[0].xyz + u.mirrors[j].xyz;
+      let h = dot(t, n);
+      let err = delta * (1.0 + abs(dot(t, u.mirrors[0].xyz)) / max(h, 1e-30));
+      trust[j - 1] = saturate(h / (3.0 * err) - 1.0);
+      // For p = ∞ the frame has E at the origin, so n.x is the width at E.
+      central = central || (j == 1 && h < n.x);
+    }
+  }
+  let trusted = min(trust.x, trust.y);
 
   // acc = color_frame · φ(r_first) ⋯ φ(r_last): φ of the tile's group element.
   let ell = max(u.ell.x, 1u);
@@ -131,19 +158,20 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   // The two triangle shades blend to their mean within half a pixel of the
   // mirrors between them, OV and OE, and where the triangle's local width
   // across them drops from 2 px to 1 px, as near O and in a cusp.
-  let crisp = saturate(2.0 * min(d_ov, d_oe) / px) * saturate((d_ov + d_oe) / px - 1.0);
+  let crisp = saturate(2.0 * min(d_ov, d_oe) / px) * saturate((d_ov + d_oe) / px - 1.0) * trusted;
   let tone = mix(0.5, f32(parity), crisp);
   var col = mix(vec3<f32>(0.20, 0.35, 0.60), vec3<f32>(0.25, 0.45, 0.70), tone);
   if (u.ell.x != 0u) {
-    let h = hash(acc[2]);  // φ(g) e_c
+    let h = hash(select(acc[2], u.color_frame[2].xyz, central && trust.x < 0.5));  // φ(g) e_c
     let hue = f32(h & 0xffffu) / 65536.0;
     let sat = 0.35 + 0.3 * f32((h >> 16u) & 0xffu) / 255.0;
     col = hsv(hue, sat, mix(0.62, 0.72, tone));
   }
-  let edge_cov = (1.0 - smoothstep(w - 0.5*px, w + 0.5*px, d_edge)) * saturate(2.0*w/px);
+  let edge_cov = (1.0 - smoothstep(w - 0.5*px, w + 0.5*px, d_edge)) * saturate(2.0*w/px) * trusted;
   col = mix(col, vec3<f32>(1.0), edge_cov);
   // Below a pixel, a line's coverage scales with its width, a dot's with its area.
-  let dot_cov = (1.0 - smoothstep(r - 0.5*px, r + 0.5*px, d_vert)) * pow(saturate(2.0*r/px), 2.0);
+  let dot_cov = (1.0 - smoothstep(r - 0.5*px, r + 0.5*px, d_vert)) * pow(saturate(2.0*r/px), 2.0)
+    * trusted;
   col = mix(col, vec3<f32>(1.0, 0.8, 0.2), dot_cov);
   // Fade at the rim: f32 gives out at the hyperbolic one, and the sphere's
   // horizon would otherwise be a hard edge.

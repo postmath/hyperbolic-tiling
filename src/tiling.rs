@@ -433,4 +433,29 @@ mod tests {
             }
         }
     }
+
+    /// Points where the cusp width at an ideal O is below its value at E lie
+    /// in the apeirogon of the fundamental triangle: their fold reflects only
+    /// in lines through O. The shader relies on this where f32 loses them.
+    #[test]
+    fn deep_in_an_ideal_center_is_the_central_apeirogon() {
+        for q in [F(3), F(27), INF] {
+            let t = Tiling::new(INF, q).unwrap();
+            let g = t.geometry;
+            let e = g.meet(t.mirrors[1], t.mirrors[2]).unwrap();
+            let h_e = t.cusp_width(1, e);
+            let mut inside = 0;
+            for i in 0..4096 {
+                let rho = 1.0 - 0.5f64.powi(i % 12 + 1);
+                let d = rho * DVec2::from_angle(i as f64 * 0.0137);
+                let x = g.disk_to_point(d, MU);
+                if t.cusp_width(1, x) < h_e {
+                    let f = t.fold(x);
+                    assert!(f.word.iter().all(|line| line[2] == 0), "{q} at {d}");
+                    inside += 1;
+                }
+            }
+            assert!(inside > 100, "{q}: {inside}");
+        }
+    }
 }
