@@ -222,7 +222,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §15.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §16.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -721,7 +721,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§14) that is acceptable.
+thousand ALU operations per pixel (§15) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -949,7 +949,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §15.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §16.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1224,7 +1224,8 @@ central apeirogon. `deep_in_an_ideal_center_is_the_central_apeirogon`
 checks this: their fold reflects only in lines through O. So such pixels
 take the central apeirogon's colour, `color_frame` applied to $e_c$, whatever
 the fold found. Lost pixels elsewhere keep whatever colour the fold found.
-They are sub-pixel tiles at the rim, where no single colour is right.
+They are sub-pixel tiles at the rim, where no single colour is right; for
+the cusp of an ideal V, milestone 14 found a better answer.
 
 After the change, the same drags leave 21 yellow pixels out of about 10,000.
 The ones left sit on the apeirogon's boundary at the rim, where the f32 and
@@ -1233,7 +1234,82 @@ half edge, which for {∞,27} is 2.84, ten times that of {7,3}.
 
 ---
 
-## 14. Precision and performance notes
+## 14. Milestone 14: averaging the fan at an ideal vertex
+
+Commit: *Average the tile colors around an ideal vertex over each pixel.*
+The mathematics is in math §11.2.
+
+### 14.1 The problem
+
+Panning toward an ideal vertex V of {p,∞} filled the screen with the fan of
+tiles around V, ever thinner, in different colours, and the result was
+moiré and colour noise. Fading to the mean was harder than for an apeirogon,
+whose wedges are all one tile. Here every wedge has a colour of its own.
+
+### 14.2 A box filter along the cusp
+
+The tiles around V are $(ac)^mP$, $m\in\mathbb Z$. Around the vertex $gV$ of
+the triangle a pixel folds into, they are $g(ac)^mP$, with colours
+$\text{acc}\cdot U^me_c$ for $U=\varphi(\sigma_a)\varphi(\sigma_c)$. That
+needs nothing but the pixel's own `acc`, so it works for every ideal vertex
+in the picture, including those on the rim. $U$ is unipotent, so the colours
+repeat with period ℓ, and a full window needs at most ℓ tiles.
+`colors_around_an_ideal_vertex_repeat_with_period_ell` checks the formula
+against folds of actual points.
+
+A tile is $2s$ wide across the cusp, with $s=d(t,OV)+d(t,VE)$, so a pixel
+spans $px/2s$ tiles. The shader averages that many around its own tile, the
+outermost ones with a fractional weight. The first version rounded the
+window down to whole tiles on each side, so a pixel spanning 1 to 3 tiles
+was not filtered at all; the fractional weights fixed that. The two shades
+use the narrow width $\min(d(t,OV)+d(t,OE),\ s)$, and the lines' mean
+coverage is $w/s$.
+
+### 14.3 Where f32 loses the place
+
+Deeper toward V the colour changed *along* a tile's wedge, which a correct
+filter cannot do. Those pixels are deep in V's cusp, where milestone 13's
+`trust` already said the place along the horocycle was lost. Only lines,
+dots and shades had been faded there. But losing the place along a cusp
+does not lose the cusp, and the mean over a full period is the same from
+any tile. So as `trust` drops, the window widens to ℓ tiles.
+
+A scratch calibration like §13.2's compared the f32 tile colour with the f64
+one for {5,∞} at the pan limit:
+
+| ratio | wrong colour |
+|---|---|
+| < 0.5 | 71% |
+| 0.5–1 | 18% |
+| 1–3 | 10% |
+| 3–6 | 3–6% |
+| > 6 | none |
+
+So milestone 13's ramp from 3 to 6 fits colours too. It also shows that the
+edge between the stripes and their mean, visible while panning toward V, is
+real. There f32 loses tiles that are still a few pixels wide, so they can be
+drawn only as their mean.
+
+### 14.4 White dust from NaN
+
+The deepest views then showed white specks near the rim, which went away
+with the line width at 0. The mean line coverage is capped at 0.1, so the
+lines had to be computed from non-finite values. An f32 emulation showed
+3% of pixels folding to inf or NaN. A trace showed how. A jump lost so many
+digits that the point landed at $x_0=-4.3$, off the upper sheet, and then
+every sweep pushed it out about four times further. WGSL leaves NaN
+behaviour open; with the usual `min` and `max`, a NaN width lifted the cap
+and the coverage saturated to 1. Two changes:
+
+* The fold stops once $|t|>10^{15}$, so all later arithmetic stays finite.
+  Such pixels have zero trust anyway.
+* The mean line coverage uses the pixel's unfolded cusp width $h_V$, which is
+  invariant under the fold and so still meaningful when the folded point is
+  not.
+
+---
+
+## 15. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -1241,7 +1317,8 @@ half edge, which for {∞,27} is 2.84, ten times that of {7,3}.
   to frame.
 * **Per-pixel cost** is dominated by the fold: up to ~35 sweeps of 3 dot
   products, plus for colors about 12 integer ops per reflection, and for
-  infinite p or q a cusp step per sweep. Even at the rim this is a few
+  infinite p or q a cusp step per sweep. Near an ideal vertex add up to ℓ
+  tile colours for the fan's box filter, a few dozen ops each. Even at the rim this is a few
   thousand ALU ops per pixel, trivial for any GPU at 1080p. If it ever mattered, the first thing to try would be lowering
   `MAX_PQ` and `MAX_SWEEPS` together.
 * **Branch divergence** in the fold loop (neighbouring pixels needing
@@ -1250,9 +1327,9 @@ half edge, which for {∞,27} is 2.84, ten times that of {7,3}.
 
 ---
 
-## 15. Workflow notes
+## 16. Workflow notes
 
-### 15.1 jj
+### 16.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -1271,13 +1348,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 15.2 Checks before each commit
+### 16.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 15.3 A throwaway verification build
+### 16.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -1287,7 +1364,7 @@ snapshot into a commit.
 
 ---
 
-## 16. Exercises and extensions
+## 17. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.
@@ -1314,10 +1391,12 @@ snapshot into a commit.
    outside the sphere on the viewer's side (math §10.7), as a second slider
    range past λ = ∞. Check which root of the inverse map is now the visible
    one, and what `rim2` becomes.
-10. **Tile colors below a pixel.** At a cusp of {3,∞} on the rim, tiles of
-    different colors become thinner than a pixel and their colors alias.
-    Blend toward a neighbour's color across VE, the way §12.4 blends the two
-    shades; the neighbour's color is one more reflection away.
+10. **Cusp coordinates.** f32 loses pixels deep in a cusp because the
+    hyperboloid coordinates there are large while the cusp is thin
+    (§13–14). Render the view centre's cusp in upper half-plane coordinates
+    instead, with the ideal point at ∞: the place along the horocycles is
+    then an x coordinate, and the fold within the cusp is x modulo the
+    strip's width. How much deeper can a pan go?
 
 ---
 

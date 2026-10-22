@@ -38,6 +38,24 @@ fn hsv(h: f32, s: f32, v: f32) -> vec3<f32> {
   return v - v * s * clamp(min(k, 4.0 - k), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+// Hue and saturation from a hash of the color key; see quotient.rs.
+fn tile_color(key: vec3<u32>, value: f32) -> vec3<f32> {
+  let h = hash(key);
+  let hue = f32(h & 0xffffu) / 65536.0;
+  let sat = 0.35 + 0.3 * f32((h >> 16u) & 0xffu) / 255.0;
+  return hsv(hue, sat, value);
+}
+
+// φ(σ_k) w = w + w_k n_k, mod ℓ.
+fn reflect_mod(w: vec3<u32>, k: i32, ell: u32) -> vec3<u32> {
+  return (w + u.cox[k].xyz * w[k] % ell) % ell;
+}
+
+// a · w, mod ℓ, for a matrix of columns.
+fn apply_mod(a: array<vec3<u32>, 3>, w: vec3<u32>, ell: u32) -> vec3<u32> {
+  return (a[0] * w.x % ell + a[1] * w.y % ell + a[2] * w.z % ell) % ell;
+}
+
 @vertex
 fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
   let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));   // fullscreen triangle
@@ -74,6 +92,7 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   let delta = 4.0 * ULP * max(mi.x, max(mi.y, mi.z)) * max(abs(p.x), max(abs(p.y), abs(p.z)));
   var trust = vec2<f32>(1.0);  // in the cusps at O and at V
   var central = false;
+  var h_v = 0.0;  // the width of the cusp at V, if V is ideal
   for (var j = 1; j < 3; j++) {
     if (u.mirrors[j].w > 0.0) {
       let n = u.mirrors[0].xyz + u.mirrors[j].xyz;
@@ -82,6 +101,7 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
       trust[j - 1] = saturate(h / (3.0 * err) - 1.0);
       // For p = ∞ the frame has E at the origin, so n.x is the width at E.
       central = central || (j == 1 && h < n.x);
+      if (j == 2) { h_v = h; }
     }
   }
   let trusted = min(trust.x, trust.y);
@@ -91,6 +111,10 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   var acc = array<vec3<u32>, 3>(u.color_frame[0].xyz, u.color_frame[1].xyz, u.color_frame[2].xyz);
   var parity = 0u;
   for (var i = 0; i < MAX_SWEEPS; i++) {
+    // A point f32 has lost (trust 0, below) can leave its sheet of the
+    // hyperboloid, and reflections then push it out exponentially. Stop
+    // before that overflows into inf or NaN, whose behavior WGSL leaves open.
+    if (max(abs(t.x), max(abs(t.y), abs(t.z))) > 1e15) { break; }
     var changed = false;
     // In a cusp between OV and a parallel mirror j, apply the k-th power of
     // the translation σ_0 σ_j at once, as in Tiling::fold.
@@ -146,28 +170,63 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   let d_ov = asin_k(dot(t, u.mirrors[0].xyz));
   let d_oe = asin_k(dot(t, u.mirrors[1].xyz));
   let d_edge = asin_k(abs(dot(t, u.mirrors[2].xyz)));
+  // Near an ideal V: one triangle's width across the cusp. A fold that f32
+  // lost may end outside D, where this is no width, so it is clamped.
+  let s = max(d_ov, 0.0) + d_edge;
   var w = min(0.5 * u.style.x * px, 0.08 * u.vert.w);
   if (u.mirrors[2].w > 0.0) {
-    w = min(w, 0.1 * (d_ov + d_edge));
+    w = min(w, 0.1 * s);
   }
   let r = min(u.style.y * px, 0.2 * u.vert.w);
 
   let dv = t - u.vert.xyz;
   let d_vert = 2.0 * asin_k(0.5 * sqrt(max(dot(dv, normal(dv)), 0.0)));  // via the chord
 
+  // Around an ideal V the tiles are g(ac)^m P for m ∈ ℤ, each 2s wide across
+  // the cusp. Where they are under 2 px wide, colors and lines blend toward
+  // their mean over the tiles the pixel spans.
+  let fan = select(1.0, saturate(2.0 * s / px - 1.0), u.mirrors[2].w > 0.0);
+
   // The two triangle shades blend to their mean within half a pixel of the
   // mirrors between them, OV and OE, and where the triangle's local width
-  // across them drops from 2 px to 1 px, as near O and in a cusp.
-  let crisp = saturate(2.0 * min(d_ov, d_oe) / px) * saturate((d_ov + d_oe) / px - 1.0) * trusted;
+  // drops from 2 px to 1 px, across OV and OE near O or across OV and VE
+  // near V.
+  let narrow = min(d_ov + d_oe, s);
+  let crisp = saturate(2.0 * min(d_ov, d_oe) / px) * saturate(narrow / px - 1.0) * trusted;
   let tone = mix(0.5, f32(parity), crisp);
   var col = mix(vec3<f32>(0.20, 0.35, 0.60), vec3<f32>(0.25, 0.45, 0.70), tone);
   if (u.ell.x != 0u) {
-    let h = hash(select(acc[2], u.color_frame[2].xyz, central && trust.x < 0.5));  // φ(g) e_c
-    let hue = f32(h & 0xffffu) / 65536.0;
-    let sat = 0.35 + 0.3 * f32((h >> 16u) & 0xffu) / 255.0;
-    col = hsv(hue, sat, mix(0.62, 0.72, tone));
+    let value = mix(0.62, 0.72, tone);
+    col = tile_color(select(acc[2], u.color_frame[2].xyz, central && trust.x < 0.5), value);  // φ(g) e_c
+    if (u.mirrors[2].w > 0.0) {
+      // A box filter over the `span` tiles the pixel covers, centred on its
+      // own: the m-th neighbours each side weigh saturate((span - 2m + 1)/2),
+      // so the weights sum to span. Their colors are acc·U^m e_c with
+      // U = φ(σ_a σ_c), of order ℓ, so at most one period is needed; ℓ is
+      // odd, and the window stops at ℓ tiles. Where f32 has lost the pixel's
+      // place along the cusp but not the cusp, the window widens to the full
+      // period, whose mean is the same from any tile.
+      let span = clamp(mix(f32(ell), px / (2.0 * s), trust.y), 1.0, f32(ell));
+      var up = vec3<u32>(0u, 0u, 1u);
+      var down = up;
+      var sum = col;
+      for (var m = 1.0; 2.0 * m - 1.0 < span; m += 1.0) {
+        up = reflect_mod(reflect_mod(up, 2, ell), 0, ell);
+        down = reflect_mod(reflect_mod(down, 0, ell), 2, ell);
+        let weight = saturate((span - 2.0 * m + 1.0) / 2.0);
+        sum += weight * (tile_color(apply_mod(acc, up, ell), value)
+          + tile_color(apply_mod(acc, down, ell), value));
+      }
+      col = sum / span;
+    }
   }
-  let edge_cov = (1.0 - smoothstep(w - 0.5*px, w + 0.5*px, d_edge)) * saturate(2.0*w/px) * trusted;
+  // One edge, 2w wide, per tile 2s wide covers w/s of the fan on average.
+  // That uses the cusp width h_v of the unfolded point, which is invariant
+  // under the fold, and still valid where f32 has lost the folded one.
+  let edge_sample = (1.0 - smoothstep(w - 0.5*px, w + 0.5*px, d_edge)) * saturate(2.0*w/px);
+  let w_v = min(min(0.5 * u.style.x * px, 0.08 * u.vert.w), 0.1 * h_v);
+  let edge_mean = select(0.0, saturate(w_v / h_v), h_v > 0.0);
+  let edge_cov = mix(edge_mean, edge_sample, fan * trust.y) * trust.x;
   col = mix(col, vec3<f32>(1.0), edge_cov);
   // Below a pixel, a line's coverage scales with its width, a dot's with its area.
   let dot_cov = (1.0 - smoothstep(r - 0.5*px, r + 0.5*px, d_vert)) * pow(saturate(2.0*r/px), 2.0)

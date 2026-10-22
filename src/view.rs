@@ -113,7 +113,7 @@ mod tests {
     use super::*;
     use crate::{
         geom::tests::{ALL, MU, MUS, assert_isometry, in_picture},
-        quotient::E_C,
+        quotient::{E_C, IDENTITY},
     };
     use std::f64::consts::PI;
 
@@ -267,6 +267,31 @@ mod tests {
                     assert!(f.sweeps < MAX_SWEEPS, "{{{p},{q}}} cusp {j} at {d}");
                 }
             }
+        }
+    }
+
+    /// The tiles around an ideal V are (ac)^m P, with colors U^m e_c for
+    /// U = φ(σ_a)φ(σ_c), repeating with period ℓ. The shader averages them.
+    #[test]
+    fn colors_around_an_ideal_vertex_repeat_with_period_ell() {
+        use crate::tiling::{Count::Infinite as INF, mirror};
+        for p in [3, 5, 8] {
+            let t = Tiling::new(p, INF).unwrap();
+            let (g, quot) = (t.geometry, &t.quotient);
+            let v = View::new(g);
+            let (a, c) = (g.reflect(t.mirrors[0]), g.reflect(t.mirrors[2]));
+            let x = g.disk_to_point(DVec2::from_angle(0.5 * PI / p as f64) * 0.1, MU);
+            let u = quot.reflect_right(quot.reflect_right(IDENTITY, mirror(0)), mirror(2));
+            let (mut y, mut w) = (x, E_C);
+            let mut colors = vec![];
+            for _ in 0..quot.ell + 2 {
+                assert_eq!(sample(&v, &t, g.point_to_disk(y, MU)).2, w, "{{{p},∞}}");
+                colors.push(w);
+                (y, w) = (a * c * y, quot.apply(u, w));
+            }
+            let ell = quot.ell as usize;
+            assert_eq!(colors[ell], colors[0]);
+            assert_ne!(colors[1], colors[0]);
         }
     }
 

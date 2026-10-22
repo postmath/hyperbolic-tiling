@@ -808,6 +808,8 @@ L key steps through admissible primes.
 | fold near a cusp | $\sim2/(1-\rho^2)$ sweeps, unbounded | cusp step in closed form (§11.2) |
 | deep in a cusp | coordinates $\sim1/h$, cusp width $h$ | pans stop at $h=3\cdot10^{-3}$ (§11.2) |
 | pixels deeper than the centre | error $\delta(1+\lvert u\rvert/h)$ in the strip | fade features below 3–6 times it (§11.2) |
+| fan of an ideal vertex aliases | tiles of different colours below a pixel | box filter over the tiles a pixel spans, up to a period of $\ell$ (§11.2) |
+| lost points overflow | a jump lands off the sheet, then sweeps diverge | stop the fold at $\lvert t\rvert>10^{15}$ |
 | shades alias in thin triangles | two tones alternate below a pixel | blend to the mean below 2 px (§11.2) |
 | lines swamp a cusp | edges converge at an ideal vertex | also cap at a tenth of the cusp's local width (§11.2) |
 | color arithmetic overflow | products in u32 | $\ell<2^{16}$; each product $<\ell^2<2^{32}$ is reduced before adding |
@@ -1102,6 +1104,17 @@ and the shader fades out lines, dots and shades where $h$ is below 3 to 6
 times that error, a margin calibrated against an f64 fold. Such pixels near
 an ideal $O$ lie in the central apeirogon (they are inside its horoball
 $h<h(E)$), so they still get its colour.
+
+**The fan at an ideal vertex.** The tiles around an ideal $V$ are
+$(ac)^mP$, $m\in\mathbb Z$, so around the vertex $gV$ of a pixel's triangle
+$gD$ their colours are $\varphi(g)\,U^me_c$ with
+$U=\varphi(\sigma_a)\varphi(\sigma_c)$. $U$ is unipotent, so the colours repeat
+with period $\ell$. Where the tiles are narrower than a pixel, the shader
+averages the colours of the tiles the pixel spans, about $px/2s$ of them
+for a triangle width $s=d(t,OV)+d(t,VE)$ across the cusp: a box filter along
+the horocycle. Where f32 has lost the place along the horocycle but not the
+cusp, it averages a full period, whose mean is the same from any tile. That
+is how the picture of a cusp can stay right even where the fold is noise.
 
 **Lines and shades.** Near an ideal $V$, edges converge from every
 direction, and lines capped at a fixed fraction of the tile would cover the
