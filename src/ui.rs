@@ -10,7 +10,7 @@ use winit::{event::WindowEvent, raw_window_handle::HasDisplayHandle, window::Win
 use crate::{
     geom::Geometry,
     gpu::Overlay,
-    tiling::{Count, MAX_PQ, Tiling},
+    tiling::{Count, MAX_LAMBDA, MAX_PQ, Tiling},
 };
 
 const USAGE: &str = "\
@@ -137,6 +137,7 @@ fn panel(
     ui.set_width(LATTICE_PX);
     let mut action = None;
 
+    // Short enough for one line, so that the lattice below never moves.
     ui.label(format!(
         "Tiling {{{},{}}}, {}",
         tiling.p,
@@ -249,40 +250,61 @@ fn geometry_color(g: Geometry) -> Color32 {
     }
 }
 
+/// For pairs with a hyperideal label, which are hyperbolic too.
+const HYPERIDEAL_COLOR: Color32 = Color32::from_rgb(0xcc, 0x79, 0xa7);
+
+fn pair_color((p, q): (Count, Count)) -> Color32 {
+    let hyperideal = |c| matches!(c, Count::Hyperideal(_));
+    if hyperideal(p) || hyperideal(q) {
+        HYPERIDEAL_COLOR
+    } else {
+        geometry_color(Geometry::of(p, q))
+    }
+}
+
 fn legend(ui: &mut Ui) {
     ui.horizontal(|ui| {
-        for g in [
+        let entries = [
             Geometry::Hyperbolic,
             Geometry::Euclidean,
             Geometry::Spherical,
-        ] {
+        ]
+        .map(|g| (geometry_color(g), g.name()));
+        for (color, name) in entries
+            .into_iter()
+            .chain([(HYPERIDEAL_COLOR, "hyperideal")])
+        {
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-            ui.painter()
-                .circle_filled(rect.center(), 4.0, geometry_color(g));
-            ui.small(g.name());
+            ui.painter().circle_filled(rect.center(), 4.0, color);
+            ui.small(name);
         }
     });
-    ui.small("p across, q up");
+    ui.small("p across, q up; beyond ∞, 2cosh δ");
 }
 
 fn pairs() -> impl Iterator<Item = (Count, Count)> {
     Count::all().flat_map(|p| Count::all().map(move |q| (p, q)))
 }
 
-/// How far ∞ is placed beyond MAX_PQ, in units of ln.
+/// How far ∞ is placed beyond MAX_PQ, and the first hyperideal label beyond
+/// ∞, in units of ln.
 const INF_GAP: f32 = 0.2;
+/// The spacing of hyperideal labels, in units of ln.
+const HYPERIDEAL_STEP: f32 = 0.1;
 
 /// Position of `c` along an axis, in units of ln from 3.
 fn coord(c: Count) -> f32 {
+    let inf = (MAX_PQ as f32 / 3.0).ln() + INF_GAP;
     match c {
         Count::Finite(m) => (m as f32 / 3.0).ln(),
-        Count::Infinite => (MAX_PQ as f32 / 3.0).ln() + INF_GAP,
+        Count::Infinite => inf,
+        Count::Hyperideal(n) => inf + INF_GAP + (n - 3) as f32 * HYPERIDEAL_STEP,
     }
 }
 
 /// Positions in the {p,q} lattice: p across, q up, both on a log scale so that
 /// small values, where the geometry changes, get the most room; ∞ comes a
-/// little after MAX_PQ.
+/// little after MAX_PQ, and the hyperideal labels evenly spaced after that.
 struct Lattice {
     /// Position of {3,3}.
     origin: Pos2,
@@ -294,7 +316,7 @@ impl Lattice {
     fn new(plot: Rect) -> Self {
         Self {
             origin: plot.left_bottom(),
-            scale: plot.width().min(plot.height()) / coord(Count::Infinite),
+            scale: plot.width().min(plot.height()) / coord(Count::Hyperideal(MAX_LAMBDA)),
         }
     }
 
@@ -307,11 +329,11 @@ impl Lattice {
     }
 
     /// A fixed fraction of the local spacing, which is about scale / max(p, q),
-    /// with ∞ counting as MAX_PQ.
+    /// with ∞ and hyperideal labels counting as MAX_PQ.
     fn radius(&self, (p, q): (Count, Count)) -> f32 {
         let m = |c| match c {
             Count::Finite(m) => m,
-            Count::Infinite => MAX_PQ,
+            Count::Infinite | Count::Hyperideal(_) => MAX_PQ,
         };
         (0.3 * self.scale / m(p).max(m(q)) as f32).max(1.0)
     }
@@ -349,18 +371,20 @@ fn lattice(ui: &mut Ui, tiling: &Tiling) -> Option<(Count, Count)> {
     painter.line(curve, Stroke::new(1.0, weak));
 
     let font = FontId::proportional(10.0);
-    let ticks = [3, 4, 5, 6, 8, 12, 16, 24, 32].map(Count::Finite);
-    for n in ticks.into_iter().chain([Count::Infinite]) {
+    // Hyperideal labels are ticked by 2cosh δ, in their own color.
+    let ticks = [3, 4, 5, 6, 8, 12, 16, 24, 32].map(|m| (Count::Finite(m), m.to_string(), weak));
+    let hyperideal = [3, 6, 10].map(|n| (Count::Hyperideal(n), n.to_string(), HYPERIDEAL_COLOR));
+    let infinite = (Count::Infinite, Count::Infinite.to_string(), weak);
+    for (c, label, color) in ticks.into_iter().chain([infinite]).chain(hyperideal) {
         let three = Count::Finite(3);
-        let below = Pos2::new(lat.at((n, three)).x, lat.origin.y + 10.0);
-        let left = Pos2::new(lat.origin.x - 10.0, lat.at((three, n)).y);
-        painter.text(below, Align2::CENTER_TOP, n, font.clone(), weak);
-        painter.text(left, Align2::RIGHT_CENTER, n, font.clone(), weak);
+        let below = Pos2::new(lat.at((c, three)).x, lat.origin.y + 10.0);
+        let left = Pos2::new(lat.origin.x - 10.0, lat.at((three, c)).y);
+        painter.text(below, Align2::CENTER_TOP, &label, font.clone(), color);
+        painter.text(left, Align2::RIGHT_CENTER, &label, font.clone(), color);
     }
 
     for pq in pairs() {
-        let color = geometry_color(Geometry::of(pq.0, pq.1));
-        painter.circle_filled(lat.at(pq), lat.radius(pq), color);
+        painter.circle_filled(lat.at(pq), lat.radius(pq), pair_color(pq));
     }
     let ring = |pq, color| {
         painter.circle_stroke(lat.at(pq), lat.radius(pq) + 3.5, Stroke::new(1.5, color));
@@ -375,13 +399,19 @@ fn lattice(ui: &mut Ui, tiling: &Tiling) -> Option<(Count, Count)> {
     }
     ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     let clicked = response.clicked();
-    response.on_hover_text_at_pointer(format!(
-        "{{{},{}}} {}",
-        hovered.0,
-        hovered.1,
-        Geometry::of(hovered.0, hovered.1).name()
-    ));
+    response.on_hover_text_at_pointer(describe(hovered));
     clicked.then_some(hovered)
+}
+
+/// "{p,q} geometry", and 2cosh δ of hyperideal labels.
+fn describe((p, q): (Count, Count)) -> String {
+    let mut text = format!("{{{p},{q}}} {}", Geometry::of(p, q).name());
+    for (name, c) in [("p", p), ("q", q)] {
+        if let Count::Hyperideal(n) = c {
+            text += &format!(", 2cosh δ = {n} for {name}");
+        }
+    }
+    text
 }
 
 #[cfg(test)]
@@ -416,7 +446,8 @@ mod tests {
             lat.at((3.into(), 3.into())),
             Pos2::new(22.0, LATTICE_PX - 22.0)
         );
-        let top_right = lat.at((Count::Infinite, Count::Infinite));
+        let top = Count::Hyperideal(MAX_LAMBDA);
+        let top_right = lat.at((top, top));
         assert!((top_right.x - (LATTICE_PX - 6.0)).abs() < 1e-3);
         assert!((top_right.y - 6.0).abs() < 1e-3);
     }

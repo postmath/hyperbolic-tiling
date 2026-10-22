@@ -15,7 +15,8 @@
 //!
 //! For m = ∞ there is no relation to keep, and 2cos(π/∞) = 2 needs no ζ: an
 //! infinite p or q puts no condition on ℓ. The parabolic element ab or ac
-//! then has order ℓ in the quotient.
+//! then has order ℓ in the quotient. The same goes for a hyperideal label
+//! with integer 2cosh δ = n, which becomes n mod ℓ.
 
 use std::collections::HashSet;
 
@@ -60,6 +61,7 @@ impl Quotient {
                 (z + pow(z, 2 * m - 1, ell)) % ell
             }
             Count::Infinite => 2 % ell,
+            Count::Hyperideal(n) => n % ell,
         };
         let (lp, lq, m2) = (lambda(p), lambda(q), ell - 2);
         let n = [[m2, lp, lq], [lp, m2, 0], [lq, 0, m2]];
@@ -139,7 +141,7 @@ impl Quotient {
 fn modulus(m: Count) -> u32 {
     match m {
         Count::Finite(m) => 2 * m,
-        Count::Infinite => 2,
+        Count::Infinite | Count::Hyperideal(_) => 2,
     }
 }
 

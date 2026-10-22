@@ -17,6 +17,11 @@ const ROTATE_RHO_MIN: f64 = 0.02;
 /// The shader's f32 loses about ε/width² of the width, 0.7% here, and the
 /// triangles at the center are already narrower than a pixel.
 const MIN_CUSP_WIDTH: f64 = 3e-3;
+/// The largest entry of M⁻¹ that pans may reach. Only a funnel of D, where a
+/// hyperideal corner leaves D open to the circle at infinity, gets there;
+/// cusps stop at MIN_CUSP_WIDTH first. Unbounded, M would eventually
+/// overflow even in f64.
+const MAX_VIEW_NORM: f64 = 1e3;
 
 #[derive(Clone, Copy)]
 pub struct View {
@@ -97,14 +102,21 @@ impl View {
         self.m = g.orthonormalize(self.m);
     }
 
-    /// Whether the settled view center is deeper in a cusp than the shader
-    /// can follow. A cusp of the fundamental triangle is unbounded, so
-    /// settling cannot keep M bounded there; pans have to stop instead.
+    /// Whether the settled view center is deeper in a cusp or a funnel than
+    /// the shader can follow. Both are unbounded parts of the fundamental
+    /// triangle, so settling cannot keep M bounded there; pans have to stop
+    /// instead.
     pub fn too_deep(&self, tiling: &Tiling) -> bool {
-        let center = self.m.inverse() * ORIGIN;
+        let m_inv = self.m.inverse();
+        let center = m_inv * ORIGIN;
         tiling
             .cusps()
             .any(|j| tiling.cusp_width(j, center) < MIN_CUSP_WIDTH)
+            || m_inv
+                .abs()
+                .to_cols_array()
+                .into_iter()
+                .any(|x| x > MAX_VIEW_NORM)
     }
 }
 
@@ -194,10 +206,12 @@ mod tests {
     }
 
     /// All 2p triangles of a tile share its color; its neighbors across an edge
-    /// generally do not.
+    /// generally do not. Also for a hyperideal q, whose edges never meet.
     #[test]
     fn color_is_constant_on_tiles() {
-        for (p, q) in PAIRS {
+        use crate::tiling::Count;
+        let pairs = PAIRS.map(|(p, q)| (p, Count::Finite(q)));
+        for (p, q) in pairs.into_iter().chain([(7, Count::Hyperideal(3))]) {
             let t = Tiling::new(p, q).unwrap();
             let g = t.geometry;
             let v = View::new(g);
@@ -234,38 +248,51 @@ mod tests {
         }
     }
 
-    /// Panning into a cusp stops at MIN_CUSP_WIDTH, and there the whole
-    /// picture still folds within the cap, thanks to the cusp steps.
+    /// Panning into a cusp stops at MIN_CUSP_WIDTH, and into a funnel at
+    /// MAX_VIEW_NORM, and there the whole picture still folds within the cap,
+    /// thanks to the cusp steps.
     #[test]
-    fn pans_into_a_cusp_stop_where_the_fold_still_works() {
-        use crate::tiling::{Count::Infinite as INF, MAX_SWEEPS};
+    fn pans_into_cusps_and_funnels_stop_where_the_fold_still_works() {
+        use crate::tiling::{
+            Count::{Hyperideal as H, Infinite as INF},
+            MAX_SWEEPS,
+        };
+        // Toward the ideal corner of a cusp, or along the x1 axis toward the
+        // open end of D beyond a hyperideal V.
+        let funnel = glam::DVec3::new(1.0, 1.0, 0.0);
+        let mut cases = vec![];
         for (p, q) in [(INF, 3.into()), (3.into(), INF), (INF, INF)] {
             let t = Tiling::new(p, q).unwrap();
-            let g = t.geometry;
             for j in t.cusps() {
-                let ideal = t.mirrors[0].cross(t.mirrors[j]);
-                let mut v = View::new(g);
-                let stopped = (0..5000).any(|_| {
-                    // Drag a point between the center and the cusp to the center.
-                    let at = v.m * ideal;
-                    let toward = DVec2::new(at.y, at.z).normalize() * at.x.signum();
-                    let before = v;
-                    v.pan(0.05 * toward, DVec2::ZERO, MU);
-                    v.settle(&t);
-                    let deep = v.too_deep(&t);
-                    if deep {
-                        v = before;
-                    }
-                    deep
-                });
-                assert!(stopped, "{{{p},{q}}} cusp {j}");
-                let m_inv = v.m.inverse();
-                for i in 0..4096 {
-                    let d = 0.999f64.sqrt() * (i % 8 + 1) as f64 / 8.0
-                        * DVec2::from_angle(i as f64 * 0.0123);
-                    let f = t.fold(m_inv * g.disk_to_point(d, MU));
-                    assert!(f.sweeps < MAX_SWEEPS, "{{{p},{q}}} cusp {j} at {d}");
+                cases.push((t, t.mirrors[0].cross(t.mirrors[j])));
+            }
+        }
+        for (p, q) in [(INF, H(5)), (6.into(), H(10)), (3.into(), H(3))] {
+            cases.push((Tiling::new(p, q).unwrap(), funnel));
+        }
+        for (t, target) in cases {
+            let (g, (p, q)) = (t.geometry, (t.p, t.q));
+            let mut v = View::new(g);
+            let stopped = (0..5000).any(|_| {
+                // Drag a point between the center and the target to the center.
+                let at = v.m * target;
+                let toward = DVec2::new(at.y, at.z).normalize() * at.x.signum();
+                let before = v;
+                v.pan(0.05 * toward, DVec2::ZERO, MU);
+                v.settle(&t);
+                let deep = v.too_deep(&t);
+                if deep {
+                    v = before;
                 }
+                deep
+            });
+            assert!(stopped, "{{{p},{q}}} toward {target}");
+            let m_inv = v.m.inverse();
+            for i in 0..4096 {
+                let d = 0.999f64.sqrt() * (i % 8 + 1) as f64 / 8.0
+                    * DVec2::from_angle(i as f64 * 0.0123);
+                let f = t.fold(m_inv * g.disk_to_point(d, MU));
+                assert!(f.sweeps < MAX_SWEEPS, "{{{p},{q}}} toward {target} at {d}");
             }
         }
     }

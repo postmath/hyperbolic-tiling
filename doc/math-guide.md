@@ -12,7 +12,8 @@ hyperbolic geometry.
 Sections 1–9 develop the hyperbolic case. Section 10 extends the model, the
 picture and the colors to the Euclidean and spherical tilings, which the code
 handles in the same formulas, parametrized by the curvature $\kappa$.
-Section 11 adds infinite $p$ and $q$.
+Section 11 adds infinite $p$ and $q$, and section 12 the hyperideal labels
+beyond them.
 
 Each section ends with the places in the code where the material is used,
 and with a few exercises. Formulas that appear in the code are marked
@@ -1154,6 +1155,67 @@ $\ell=13$ each color covers two of them.
    $\ell_k=c_0-k(c_0+c_j)$, first on $u$ and $h$, then as matrices.
 3. Show that around each ideal vertex of $\{3,\infty\}$ mod 7 the colors
    repeat with period 7, the width of the cusps of $X(7)$.
+
+---
+
+## 12. Hyperideal labels
+
+### 12.1 Past infinity
+
+The Gram entry of two mirrors is $-\cos(\pi/m)$ when they meet at angle
+$\pi/m$, and $-1$ when they meet at infinity. Below $-1$ they are
+**ultraparallel**: they never meet, and the entry is $-\cosh\delta$ for the
+length $\delta$ of their common perpendicular. Coxeter writes the label as
+$i\pi/\delta$, since $\cos(\pi/m)=\cosh\delta$ for $m=i\pi/\delta$. The corner
+is then **hyperideal**: the lines' covectors have a spacelike cross
+product, a point beyond the circle at infinity, and `meet` returns `None` as
+it does for an ideal corner. The code writes every label as
+$\lambda=-2B_{ij}$: $2\cos(\pi/m)$, then 2 for $\infty$, then $2\cosh\delta$
+(`Count::lambda`). The triangle exists for every $\delta>0$ in either
+position, and for both at once.
+
+* **Hyperideal q.** A tile's sides are complete geodesics: images of VE that
+  meet no other side. Adjacent sides are $2\delta$ apart, and between them the
+  tile reaches the circle at infinity along an arc. Cutting each corner off
+  along its polar, the common perpendicular, leaves a compact $2p$-gon with
+  all right angles. The tiles at a "vertex" form an infinite chain along
+  that polar, translated by $\sigma_a\sigma_c$, which moves $2\delta$ along it.
+* **Hyperideal p.** The tile centre $O$ is beyond infinity. Each tile is a
+  **pseudogon** with infinitely many equal edges, whose vertices lie on a
+  hypercycle, the curve at constant distance from $O$'s polar. $q$ of them
+  meet at each vertex.
+
+For hyperideal $q$, $\Delta=\langle a,b\rangle*_{\langle b\rangle}\langle b,c\rangle$
+is an amalgamated free product, because no relation ties $a$ to $c$. Its
+Bass–Serre tree has a vertex per tile, of degree $p$, and one per side, of
+degree 2, joining the two tiles on either side of it. So the dual graph of
+the tiling is the infinite $p$-regular tree. The tiles cover the
+whole plane. What remains of the circle at infinity, outside their arcs,
+is the group's limit set, a Cantor set.
+
+### 12.2 In the code
+
+* **Frame.** For finite $p$ nothing changes: $c_0^2=\lambda_q^2/4\sin^2(\pi/p)-1$
+  is just larger. For hyperideal $p$ the frame is that of $p=\infty$ (§11.1),
+  with $a_0^2=\lambda_p^2/4+\lambda_q^2/4-1$.
+* **Size.** With no vertex, lines and dots are capped by the distance from
+  $E$ to $OV$, as for $q=\infty$.
+* **Fold.** No cusps, so no jumps. Away from the limit set the fold is short:
+  at most 7 sweeps over the sampled disks of `fold_converges_within_cap`.
+* **Funnels.** $D$ is open to the circle at infinity between the two
+  ultraparallel mirrors, beyond their common perpendicular. That end, a
+  funnel, is unbounded like a cusp, so settling cannot bound $M$ there
+  either, and unchecked $M$ grows until even f64 overflows. Pans stop where
+  an entry of $M^{-1}$ would exceed $10^3$ (`View::too_deep`).
+* **Colours.** $\lambda$ must reduce mod $\ell$, which an integer does with no
+  condition on $\ell$. So the labels are the integers $2\cosh\delta=3,\dots,10$.
+  There is no relation to check. For small $\ell$ the reduction can be
+  degenerate: for $\{3,i\pi/\delta\}$ with $2\cosh\delta=4$,
+  $\det 2B=8(1-\tfrac14-4)=-26$ vanishes mod 13, and the colours are then
+  $13^2$, as in the Euclidean case (§10.6).
+
+A continuous $\delta$ would lose the colours between integers, and needs a
+second control; see the implementation guide, exercise 11.
 
 ---
 

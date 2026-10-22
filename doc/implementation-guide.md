@@ -222,7 +222,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §16.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §17.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -721,7 +721,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§15) that is acceptable.
+thousand ALU operations per pixel (§16) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -949,7 +949,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §16.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §17.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1309,7 +1309,47 @@ and the coverage saturated to 1. Two changes:
 
 ---
 
-## 15. Precision and performance notes
+## 15. Milestone 15: hyperideal labels
+
+Commit: *Add hyperideal labels with integer 2cosh δ.* The mathematics is in
+math §12.
+
+* **`Count::Hyperideal(n)`** is the label $i\pi/\delta$ with $2\cosh\delta=n$, for
+  $n$ in 3..=`MAX_LAMBDA` = 10. `Count::all` lists them after ∞, so keys,
+  lattice and tests walk them like the rest. `Display` gives Coxeter's form,
+  for example $i\pi/0.962$.
+* **`Count::lambda`** replaced `Count::angle`. The construction needs the
+  cosine of the corner's angle, which continues past 1 as $\cosh\delta$; the
+  angle itself does not. For finite $p$ the sine is
+  $\sqrt{1-\cos^2}$. The frame of $p=\infty$ now serves every $p$ that is not
+  finite.
+* **The quotient** maps $\lambda=n$ to $n \bmod \ell$, with no congruence and no
+  relation, like ∞.
+* **The lattice** has a band of integer stops past ∞ on each axis, evenly
+  spaced, in a fourth Okabe–Ito colour, reddish purple, with its own legend
+  entry. Its ticks are values of $2\cosh\delta$ in that colour, and a dot's
+  tooltip adds them. The first version put the tooltip's text in the panel
+  label too. It wrapped onto a second line, which moved the lattice, and a
+  scripted click landed on the wrong dot. The label is short again.
+
+* **Funnels.** Beyond a hyperideal corner, D is open to the circle at
+  infinity, and panning there is unbounded like panning into a cusp. This
+  was found only later: a pan into such a funnel turned the screen black, and
+  an emulation showed M growing by a factor of about 150 every 50 pan steps,
+  until the f64 matrix itself was NaN. `View::too_deep` now also stops pans
+  where an entry of $M^{-1}$ would exceed `MAX_VIEW_NORM` = 1000. Cusps reach
+  their own limit first, at about 400.
+
+Checks: `gram_conditions`, the folds and `color_is_constant_on_tiles` cover
+hyperideal labels in either position and in both, and `stepping_stays_in_range`
+steps from ∞ into them. `pans_into_cusps_and_funnels_stop_where_the_fold_still_works`
+covers three funnels. Screenshots of {3, iπ/0.962}, {iπ/0.962, 3},
+{iπ/0.962, iπ/0.962} and a pan of {3, iπ/1.567} match §12.1: complete,
+disjoint sides, and tiles reaching the rim.
+
+---
+
+## 16. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -1327,9 +1367,9 @@ and the coverage saturated to 1. Two changes:
 
 ---
 
-## 16. Workflow notes
+## 17. Workflow notes
 
-### 16.1 jj
+### 17.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -1348,13 +1388,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 16.2 Checks before each commit
+### 17.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 16.3 A throwaway verification build
+### 17.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -1364,7 +1404,7 @@ snapshot into a commit.
 
 ---
 
-## 17. Exercises and extensions
+## 18. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.
@@ -1397,6 +1437,12 @@ snapshot into a commit.
     instead, with the ideal point at ∞: the place along the horocycles is
     then an x coordinate, and the fold within the cusp is x modulo the
     strip's width. How much deeper can a pan go?
+11. **Continuous δ.** Add a slider for a hyperideal label, over
+    $\lambda=2\cosh\delta$ rather than δ, shown only when that label is
+    hyperideal. egui's smart aim then lands on exactly the integers, which are
+    the colourable values. Between them, fall back to the two-tone colouring
+    and grey out the colour controls. `Count::Hyperideal` needs an f64 for
+    this, and `Tiling::quotient` an `Option`.
 
 ---
 

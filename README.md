@@ -62,7 +62,9 @@ Mouse and keyboard:
 | H | hide / show the panel |
 
 p and q range over 3..=32 and ∞: an infinite q gives ideal polygons, like the
-Farey tessellation {3,∞}, and an infinite p gives apeirogons. The window title shows the current tiling, ℓ, and
+Farey tessellation {3,∞}, and an infinite p gives apeirogons. Beyond ∞ come
+Coxeter's hyperideal labels iπ/δ, for 2cosh δ = 3..=10: tiles whose sides
+never meet, or pseudogons with vertices on a hypercycle. The window title shows the current tiling, ℓ, and
 the number of colors.
 
 ## Tests

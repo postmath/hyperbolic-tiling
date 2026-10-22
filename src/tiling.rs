@@ -3,7 +3,9 @@
 //! finite p, O is the origin and V is on the x1 axis. For p = ∞, O is ideal,
 //! the center of a horocycle through the vertices of an apeirogon; E is then
 //! the origin, with VE along the x1 axis and O straight up. For q = ∞, V is
-//! ideal.
+//! ideal. A hyperideal label puts its corner beyond infinity: OV and the
+//! other mirror there are ultraparallel. For a hyperideal p the frame is
+//! that of p = ∞.
 
 use std::{f64::consts::PI, fmt};
 
@@ -16,6 +18,8 @@ pub const MAX_SWEEPS: u32 = 64;
 /// Largest supported finite p and q. The fold needs more sweeps as p or q
 /// grows (about 35 at 32); see `fold_converges_within_cap`.
 pub const MAX_PQ: u32 = 32;
+/// Largest 2cosh δ of a hyperideal label.
+pub const MAX_LAMBDA: u32 = 10;
 /// Cusp steps beyond this are skipped, as they are in the shader, where k
 /// must fit an i32 and f32 has long lost the point anyway.
 const MAX_CUSP_STEP: f64 = 1e7;
@@ -23,24 +27,32 @@ const MAX_CUSP_STEP: f64 = 1e7;
 /// of the hyperbolic {7,3} and the spherical {3,5} and {5,3}.
 const EUCLIDEAN_RADIUS: f64 = 0.6;
 
-/// p or q: sides per tile or tiles per vertex, 3..=MAX_PQ or infinite.
+/// p or q: sides per tile or tiles per vertex, 3..=MAX_PQ or infinite, or
+/// hyperideal: iπ/δ in Coxeter's notation, for δ with 2cosh δ = n in
+/// 3..=MAX_LAMBDA. Integer n keeps tile colors (see quotient.rs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Count {
     Finite(u32),
     Infinite,
+    Hyperideal(u32),
 }
 
 impl Count {
     pub fn all() -> impl Iterator<Item = Self> {
-        (3..=MAX_PQ).map(Self::Finite).chain([Self::Infinite])
+        (3..=MAX_PQ)
+            .map(Self::Finite)
+            .chain([Self::Infinite])
+            .chain((3..=MAX_LAMBDA).map(Self::Hyperideal))
     }
 
-    /// π/m, the angle of the fundamental triangle at the corresponding
-    /// corner: 0 where that corner is ideal.
-    pub fn angle(self) -> f64 {
+    /// λ = -2B for the Gram entry B of the two mirrors at the corresponding
+    /// corner: 2cos(π/m) for angle π/m, 2 where they meet at infinity, and
+    /// 2cosh δ where they are a distance δ apart.
+    pub fn lambda(self) -> f64 {
         match self {
-            Self::Finite(m) => PI / m as f64,
-            Self::Infinite => 0.0,
+            Self::Finite(m) => 2.0 * (PI / m as f64).cos(),
+            Self::Infinite => 2.0,
+            Self::Hyperideal(n) => n as f64,
         }
     }
 
@@ -63,6 +75,7 @@ impl fmt::Display for Count {
         match self {
             Self::Finite(m) => write!(f, "{m}"),
             Self::Infinite => write!(f, "∞"),
+            Self::Hyperideal(n) => write!(f, "iπ/{:.3}", (*n as f64 / 2.0).acosh()),
         }
     }
 }
@@ -108,16 +121,17 @@ impl Tiling {
             return None;
         }
         let g = Geometry::of(p, q);
-        let (sp, cp) = p.angle().sin_cos();
-        let cq = q.angle().cos();
-        let mirrors = if p == Count::Infinite {
-            // OV makes angle 0 with the x2 axis OE, and π/q with the x1
-            // axis VE; its offset follows from the normalization.
+        let (cp, cq) = (p.lambda() / 2.0, q.lambda() / 2.0);
+        let mirrors = if !matches!(p, Count::Finite(_)) {
+            // OV makes Gram entries -cp with the x2 axis OE and -cq with the
+            // x1 axis VE; its offset follows from the normalization.
             let a0 = (-g.kappa() * (cp * cp + cq * cq - 1.0)).sqrt();
             [DVec3::new(a0, -cp, -cq), DVec3::Y, DVec3::Z]
         } else {
-            // VE is perpendicular to OE and meets OV at angle π/q; its offset
-            // c0 follows from the normalization, except in the Euclidean case.
+            // VE is perpendicular to OE and makes Gram entry -cq with OV; its
+            // offset c0 follows from the normalization, except in the
+            // Euclidean case.
+            let sp = (1.0 - cp * cp).sqrt();
             let c1 = -cq * cp / sp;
             let c0 = match g {
                 Geometry::Euclidean => -EUCLIDEAN_RADIUS * c1,
@@ -241,10 +255,10 @@ mod tests {
         },
         quotient::{E_C, IDENTITY},
     };
-    use Count::{Finite as F, Infinite as INF};
+    use Count::{Finite as F, Hyperideal as H, Infinite as INF};
     use glam::DVec2;
 
-    const PAIRS: [(Count, Count); 22] = [
+    const PAIRS: [(Count, Count); 29] = [
         (F(3), F(3)),
         (F(3), F(4)),
         (F(4), F(3)),
@@ -267,6 +281,13 @@ mod tests {
         (INF, F(8)),
         (F(32), INF),
         (INF, INF),
+        (F(3), H(3)),
+        (H(3), F(3)),
+        (F(7), H(10)),
+        (H(10), F(7)),
+        (INF, H(4)),
+        (H(4), INF),
+        (H(3), H(3)),
     ];
 
     #[test]
@@ -303,8 +324,10 @@ mod tests {
         let t32 = Tiling::new(32, 3).unwrap();
         assert_eq!(pq(t32.stepped(1, 0)), Some((INF, F(3))));
         let t_inf = Tiling::new(INF, 3).unwrap();
-        assert_eq!(pq(t_inf.stepped(1, 0)), None);
+        assert_eq!(pq(t_inf.stepped(1, 0)), Some((H(3), F(3))));
         assert_eq!(pq(t_inf.stepped(-1, 0)), Some((F(32), F(3))));
+        let t_last = Tiling::new(H(MAX_LAMBDA), 3).unwrap();
+        assert_eq!(pq(t_last.stepped(1, 0)), None);
     }
 
     #[test]
@@ -316,13 +339,14 @@ mod tests {
             for n in t.mirrors {
                 assert!((g.form(n, n) - 1.0).abs() < 1e-9);
             }
-            assert!((g.form(a, b) + p.angle().cos()).abs() < 1e-9);
-            assert!((g.form(a, c) + q.angle().cos()).abs() < 1e-9);
+            assert!((g.form(a, b) + p.lambda() / 2.0).abs() < 1e-9);
+            assert!((g.form(a, c) + q.lambda() / 2.0).abs() < 1e-9);
             assert!(g.form(b, c).abs() < 1e-9);
-            // Exactly the corners with angle 0 are ideal.
+            // Exactly the corners of finite labels are points.
+            let finite = |c| matches!(c, F(_));
             let o = g.meet(a, b);
-            assert_eq!(o.is_none(), p == INF);
-            assert_eq!(t.vert.is_none(), q == INF);
+            assert_eq!(o.is_some(), finite(p));
+            assert_eq!(t.vert.is_some(), finite(q));
             let e = g.meet(b, c).unwrap();
             // Each corner strictly inside the opposite mirror.
             assert!(a.dot(e) > 0.0);
@@ -335,13 +359,15 @@ mod tests {
                 assert!(v.dot(c).abs() < 1e-9);
             }
             // Right triangle VEO: cos_κ |VE| = cos(π/p) / sin(π/q), or in the
-            // plane |VE| = |OV| sin(π/p).
-            let (sp, sq) = (p.angle().sin(), q.angle().sin());
+            // plane |VE| = |OV| sin(π/p); with λ/2 for cos(π/p) when O is
+            // not a point.
+            let (cp, cq) = (p.lambda() / 2.0, q.lambda() / 2.0);
+            let (sp, sq) = ((1.0 - cp * cp).max(0.0).sqrt(), (1.0 - cq * cq).sqrt());
             let err = match g {
-                _ if q == INF => 0.0,
-                Geometry::Spherical => t.size.cos() - p.angle().cos() / sq,
+                _ if !finite(q) => 0.0,
+                Geometry::Spherical => t.size.cos() - cp / sq,
                 Geometry::Euclidean => t.size - EUCLIDEAN_RADIUS * sp,
-                Geometry::Hyperbolic => t.size.cosh() - p.angle().cos() / sq,
+                Geometry::Hyperbolic => t.size.cosh() - cp / sq,
             };
             assert!(err.abs() < 1e-9, "{{{p},{q}}}");
             assert!(t.size.is_finite() && t.size > 0.0, "{{{p},{q}}}");
