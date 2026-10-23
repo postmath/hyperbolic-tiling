@@ -13,7 +13,8 @@ Sections 1–9 develop the hyperbolic case. Section 10 extends the model, the
 picture and the colors to the Euclidean and spherical tilings, which the code
 handles in the same formulas, parametrized by the curvature $\kappa$.
 Section 11 adds infinite $p$ and $q$, and section 12 the hyperideal labels
-beyond them.
+beyond them. Section 13 adds two more conformal pictures, the half-plane and
+the band.
 
 Each section ends with the places in the code where the material is used,
 and with a few exercises. Formulas that appear in the code are marked
@@ -1225,6 +1226,110 @@ is the group's limit set, a Cantor set.
 
 A continuous $\delta$ would lose the colours between integers, and needs a
 second control; see the implementation guide, exercise 11.
+
+---
+
+## 13. The half-plane and the band
+
+The disk is not the only conformal picture. This section adds two more, each
+tied to the view the way the disk is: the screen frame and $M$ stay the same,
+and only the map from the screen to the surface changes. Each one turns a
+one-parameter group of isometries into horizontal translations of the
+screen: the parabolic motions about an ideal point for the half-plane, and
+the translations along a line for the band.
+
+### 13.1 The half-plane
+
+Pick the null vector $\ell=(1,0,1)$. It is the top of the disk's rim. Then
+$h(x)=-\langle x,\ell\rangle=x_0-x_2$ is positive on $\mathbb H^2$, and
+$$w=u+iv=\frac{(x_1,\ 1)}{x_0-x_2},\qquad
+x=\frac{(1+|w|^2,\ 2u,\ |w|^2-1)}{2v}\qquad\textbf{(code: `half\_plane\_to\_point`, shader)}$$
+maps $\mathbb H^2$ onto the upper half-plane $v>0$, with
+$$ds=\frac{|dw|}{v}.$$
+
+* **Horocycles.** A plane $h=\text{const}$ contains the direction of $\ell$.
+  It meets the hyperboloid in a horocycle centred at $\ell$. So the lines
+  $v=\text{const}$ are the horocycles about $\infty$, and $\log v$ is the
+  signed distance from the one through $O$.
+* **The disk.** In terms of the Poincaré coordinate $z$ of §3.1,
+  $w=(z+i)/(1+iz)$. This Möbius map sends $z=i$ to $\infty$ and $0$ to $i$,
+  with derivative 2 at 0. So near the centre the half-plane is the disk at
+  half the scale, the same way up and not mirrored. The null vector
+  $(1,0,-1)$ would give the circle inversion about $z=-i$ instead, which
+  reverses orientation.
+* **Motions fixing $\infty$** are $w\mapsto aw+b$, $a>0$. In the coordinates
+  $(h,k,c)=(x_0-x_2,\ x_0+x_2,\ x_1)=(1,\ |w|^2,\ u)/v$ they are linear:
+  $$h\mapsto h/a,\qquad c\mapsto c+\tfrac ba h,\qquad
+  k\mapsto ak+2bc+\tfrac{b^2}a h.\qquad\textbf{(code: `half\_plane\_similarity`)}$$
+  The isometry group becomes $PSL(2,\mathbb R)$, acting by real Möbius maps.
+
+### 13.2 The band, and Mercator
+
+Locate a point by $\sigma$, the distance along the $x_1$ axis to the foot of
+its perpendicular, and $\eta$, its signed distance from the axis:
+$$x=(\cos_\kappa\sigma\cos_\kappa\eta,\ \sin_\kappa\sigma\cos_\kappa\eta,\ \sin_\kappa\eta),\qquad
+ds^2=\cos_\kappa^2\eta\,d\sigma^2+d\eta^2.$$
+On the sphere these are longitude and latitude. Stretching $\eta$ to $t$
+with $dt=d\eta/\cos_\kappa\eta$, and keeping $s=\sigma$, makes the picture
+conformal:
+$$s=\tan_\kappa^{-1}\frac{x_1}{x_0},\quad t=\tan_{-\kappa}^{-1}x_2,\qquad
+x=\frac{(\cos_\kappa s,\ \sin_\kappa s,\ \sin_{-\kappa}t)}{\cos_{-\kappa}t},\qquad
+ds=\frac{|dw|}{\cos_{-\kappa}t}.\qquad\textbf{(code: `band\_to\_point`, shader)}$$
+
+| κ | picture | $s$ | $t$ | conformal factor |
+|---|---|---|---|---|
+| −1 | band, $\lvert t\rvert<\pi/2$ | $\operatorname{artanh}(x_1/x_0)$ | $\arctan x_2$ | $\sec t$ |
+| 0 | plane | $x_1$ | $x_2$ | 1 |
+| 1 | Mercator | $\operatorname{atan2}(x_1,x_0)$ | $\operatorname{artanh}x_2$ | $\operatorname{sech}t$ |
+
+In terms of the disk, $s+it=2\tan_\kappa^{-1}z$ as a complex function: the
+Möbius map that sends the axis's ends to 0 and $\infty$, then $\log$. So the
+band is the logarithm of the half-plane, as Mercator's projection is the
+logarithm of the stereographic one. Translations along the axis are
+$s\mapsto s+c$, and the reflection in the axis is $t\mapsto-t$.
+
+### 13.3 What does not carry over
+
+* **No half-plane on the sphere.** It needs a real null vector, an ideal
+  point, and the sphere has none. In the plane it is the plane itself:
+  scaled to curvature $-k^2$ around $O$ at height $1/k$, its metric is
+  $|dw|/(1+ky)$, whose boundary recedes as $k\to0$. The band does carry over,
+  as the table shows.
+* **No projection family.** The disk's λ does not extend. Projecting from
+  $-\tau\ell$ onto a plane parallel to $\ell$ gives $(u,\ v+|w|^2/2\tau)$,
+  from a Klein-like picture at $\tau=0$ to the half-plane at $\tau=\infty$.
+  But boosts toward $\ell$ only rescale it, so every $\tau$ is the same
+  picture zoomed. The disk's radial formula applied to $\eta$ gives
+  cylindrical projections, but not Mercator's. So both charts are shown only
+  for the conformal $\mu=1/2$.
+
+### 13.4 In the code
+
+* **Screen units.** The shader and `Geometry::screen_to_point` take the
+  pixel in units of the chart's scale: the disk's radius, or the distance
+  from the centre to the half-plane's boundary, $w=d+i$, and to the band's
+  edges, $(s,t)=\tfrac\pi2 d$. Mercator uses the band's scale, which shows
+  latitudes up to $\operatorname{gd}(\pi/2)\approx66°$.
+* **Pixel size** per screen unit is $1/v$ and $\tfrac\pi2/\cos_{-\kappa}t$
+  (unit test: `length_per_screen_unit_in_charts`). The rim fade uses
+  $1-2/\text{len}$, which is $\rho^2$ in the Poincaré disk.
+* **Drags.** A pan still carries the grabbed point along its geodesic. The
+  secondary drag uses each chart's own motions: $w\mapsto aw+b$ through the
+  grabbed point, with $a=v_2/v_1$, $b=u_2-au_1$, and the translation by the
+  drag's horizontal part along the band's axis. Both charts limit drags to
+  $x_0\le99$, the distance from $O$ of the Poincaré disk's limit
+  $\rho^2\le0.98$.
+
+**Exercises.**
+1. Check $w=(z+i)/(1+iz)$ by substituting §3.1's $z=(x_1+ix_2)/(1+x_0)$.
+2. Show that the curves $t=\text{const}$ of the band are hypercycles, at
+   constant distance from the axis, and that in the half-plane they are the
+   rays from $w=0$.
+3. In $\{\infty,3\}$, the tile centre $O$ is the ideal point straight up
+   (§11.1), so in the half-plane the tiling is periodic in $u$. Find the
+   period in terms of the edge length.
+4. Show that $s+it=2\arctan z$ is Mercator's projection, with the poles at
+   $z=\pm i$.
 
 ---
 

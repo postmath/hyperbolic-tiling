@@ -17,9 +17,9 @@ src/main.rs      winit application: window, input events, App state
 src/gpu.rs       wgpu setup and per-frame rendering; the Uniforms struct
 src/tiling.wgsl  the vertex and fragment shaders: fold, edges, dots, colors
 src/geom.rs      the three geometries in one model, in f64: forms,
-                 reflections, translations, rotations, disk <-> surface
+                 reflections, translations, rotations, screen <-> surface
 src/tiling.rs    a {p,q} tiling: mirrors, vertex V, the CPU fold
-src/view.rs      the view matrix M, pan/rotate, settling (rebasing)
+src/view.rs      the view matrix M, the drags, settling (rebasing)
 src/quotient.rs  finite quotient mod ℓ for stable tile colors
 src/ui.rs        the egui control panel and the {p,q} lattice picker
 src/snapshot.rs  the exact view state as a line of text, printed and loaded
@@ -38,8 +38,9 @@ What happens per input event and per frame:
    `Uniforms` value: $M^{-1}$ and the mirrors as f32, color data as u32.
    `Renderer::render` uploads it, draws one fullscreen triangle, and draws
    the panel on top.
-4. For every pixel the fragment shader maps the pixel to the disk, then to
-   the hyperboloid, plane or sphere (§9), then through $M^{-1}$ into the
+4. For every pixel the fragment shader maps the pixel through the disk or
+   another chart (§18) to the hyperboloid, plane or sphere (§9), then through
+   $M^{-1}$ into the
    tiling frame. It folds the point into the fundamental triangle and shades
    it.
 
@@ -223,7 +224,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §19.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §20.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -722,7 +723,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§18) that is acceptable.
+thousand ALU operations per pixel (§19) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -950,7 +951,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §19.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §20.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1449,7 +1450,84 @@ error and fell back to {7,3}.
 
 ---
 
-## 18. Precision and performance notes
+## 18. Milestone 18: the half-plane and the band
+
+Commit: *Add half-plane and band/Mercator views.* The mathematics is in math
+§13.
+
+### 18.1 Charts
+
+`geom::Chart` is the disk, the half-plane or the band, and
+`geom::Projection` pairs it with μ. `Settings` keeps the chart chosen, and
+`Projection::new` decides what is shown: the chosen chart if the geometry has
+it and μ = 1/2, else the disk. So the choice survives a trip to a spherical
+tiling or to Klein, and comes back with it. Everything downstream takes a
+`Projection`: `Geometry::screen_to_point`, `View::pan` and `pannable`, and
+`Uniforms::new`, which passes the chart as `proj.w`. The uniforms did not
+grow.
+
+Every chart is tied to the view: $M$ is the same, and only the map from
+pixel to surface changes. Switching charts therefore needs no change to $M$,
+to settling or to the colours.
+
+### 18.2 Screen units
+
+`Ready::to_disk` became `to_screen`: pixels from the window centre, in units
+of a scale that depends on the chart. The disk's is its radius, as before,
+fitted to the smaller window side. The half-plane's and the band's are fitted
+to the height alone: the boundary line, or the band's edges, sit at the
+margin, and the picture runs off the sides. At the centre that is 2× and
+4/π ≈ 1.27× the disk's scale. Mercator uses the band's scale.
+
+### 18.3 The shader
+
+The pixel-to-point step became three branches, each giving the point, its
+model length per screen unit `len`, and `rim`. The pixel size is then
+`len / screen.z` in every chart, which replaced the disk's inline formula.
+`rim` drives the same fade as before. For the hyperbolic charts it is
+$1-2/	ext{len}$, which equals ρ² in the Poincaré disk, so the fade starts
+where pixels are as large as at the disk's. Mercator has no rim.
+
+### 18.4 Drags
+
+`Drag::Rotate` became `Drag::Secondary`, which depends on the chart: rotate
+the disk, `View::scale` in the half-plane, `View::slide` in the band.
+`Drag::holds` says whether a drag keeps the grabbed point under the cursor,
+which a pan does everywhere and a scale does too. Such a drag must start on a
+pannable point, and lets go when the pointer leaves the pannable region.
+
+In the charts `pannable` is $x_0\le99$, the Poincaré disk's limit as a
+distance from $O$, and points beyond it are clamped by bisection along the
+segment from the centre. The region is star-shaped about the centre in every
+chart, so one bisection serves them all, the disk included.
+
+### 18.5 Panel and snapshot
+
+A row of buttons above the projection presets picks the chart: Disk,
+Half-plane, Band, or on the sphere Azimuthal, Half-plane, Mercator. Each
+disabled button says why on hover: the plane, the sphere's lack of ideal
+points, or λ ≠ 1. The presets and the λ slider are disabled outside the
+disk. The view line gained `chart=disk|half|band`, optional so that older
+lines still load.
+
+### 18.6 Checks
+
+Unit tests: round trips and conformal pixel sizes for both charts in both
+geometries; that each chart matches the disk at the centre up to scale,
+which catches a mirrored or rotated chart; that the half-plane's ∞ is the
+top of the rim; that the scale drag holds the grabbed point and fixes ∞;
+that the slide moves along the axis; and that drags toward a chart's edge
+stop at $x_0=99$.
+
+Screenshots, loaded with `--view`: {7,3} in all three charts, with matching
+colours; {5,3} in Mercator; {5,3} with the half-plane chosen, which shows
+the azimuthal picture; {∞,3} in the half-plane, where the apeirogon centred
+at the top of the rim becomes a periodic row; and {3,∞} in the band, with an
+ideal vertex at the axis's end.
+
+---
+
+## 19. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -1467,9 +1545,9 @@ error and fell back to {7,3}.
 
 ---
 
-## 19. Workflow notes
+## 20. Workflow notes
 
-### 19.1 jj
+### 20.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -1488,13 +1566,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 19.2 Checks before each commit
+### 20.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 19.3 A throwaway verification build
+### 20.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -1504,7 +1582,7 @@ snapshot into a commit.
 
 ---
 
-## 20. Exercises and extensions
+## 21. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.

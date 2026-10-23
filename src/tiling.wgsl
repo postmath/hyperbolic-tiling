@@ -4,8 +4,10 @@ struct U {
   // width at E, which bounds the cusp's horoball, else 0
   mirrors: array<vec4<f32>, 3>,
   vert: vec4<f32>,           // xyz = V, w = Tiling::size
-  screen: vec4<f32>,         // xy = resolution px, z = px per unit of disk radius
-  proj: vec4<f32>,           // x = curvature κ, y = projection μ, z = 1 / rim2 or 0
+  screen: vec4<f32>,         // xy = resolution px, z = px per screen unit
+  // x = curvature κ, y = projection μ, z = 1 / rim2 or 0, w = chart: 0 disk,
+  // 1 half-plane, 2 band
+  proj: vec4<f32>,
   style: vec4<f32>,          // x = line width px, y = vertex dot radius px, zw unused
   // Tile colors (see quotient.rs): n_k of the reflections mod ℓ, the view's
   // color frame (columns), and x = ℓ or 0 for two-tone.
@@ -18,6 +20,7 @@ struct U {
 const MAX_SWEEPS: i32 = 64;  // must match tiling::MAX_SWEEPS
 const MAX_CUSP_STEP: f32 = 1e7;  // must match tiling::MAX_CUSP_STEP
 const ULP: f32 = 1.2e-7;  // of f32 at 1
+const FRAC_PI_2: f32 = 1.5707964;
 
 // Kc for K = diag(κ, 1, 1): the reflection in line c is x -> x - 2(c·x)Kc.
 fn normal(c: vec3<f32>) -> vec3<f32> { return vec3<f32>(u.proj.x * c.x, c.yz); }
@@ -66,19 +69,52 @@ fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
-  // Pixel y points down; flip so the disk is math-oriented (CCW positive).
+  // Pixel y points down; flip so the picture is math-oriented (CCW positive).
   let uv = vec2<f32>(1.0, -1.0) * (frag.xy - 0.5 * u.screen.xy) / u.screen.z;
-  let rim = dot(uv, uv) * u.proj.z;  // 1 at the rim of the picture, if any
   let bg = vec3<f32>(0.08, 0.08, 0.1);
-  if (rim > 0.999) { return vec4<f32>(bg, 1.0); }
 
-  // Inverse projection, as in Geometry::disk_to_point.
-  let a = 1.0 - u.proj.y;
-  let b = u.proj.y;
-  let ks = u.proj.x * 4.0 * dot(uv, uv);
-  let x0 = (sqrt(max(1.0 + ks * (a*a - b*b), 0.0)) - ks * a * b) / (1.0 + ks * a * a);
-  let g = a * x0 + b;
-  let p = vec3<f32>(x0, 2.0 * g * uv);
+  // The point under the pixel, as in Geometry::screen_to_point; its model
+  // length per screen unit, the larger of two if not conformal; and `rim`,
+  // 1 at the edge of the picture, if any.
+  var p: vec3<f32>;
+  var len: f32;
+  var rim: f32;
+  if (u.proj.w == 1.0) {
+    // The half-plane, w = uv + i.
+    let w = uv + vec2<f32>(0.0, 1.0);
+    if (w.y <= 0.0) { return vec4<f32>(bg, 1.0); }
+    let q = dot(w, w);
+    p = vec3<f32>(1.0 + q, 2.0 * w.x, q - 1.0) / (2.0 * w.y);
+    len = 1.0 / w.y;
+    // Like the Poincaré disk's ρ² = 1 - 2/len.
+    rim = 1.0 - 2.0 * w.y;
+  } else if (u.proj.w == 2.0) {
+    // The band, or Mercator on the sphere.
+    let w = FRAC_PI_2 * uv;
+    if (u.proj.x > 0.0) {
+      p = vec3<f32>(cos(w.x), sin(w.x), sinh(w.y)) / cosh(w.y);
+      len = FRAC_PI_2 / cosh(w.y);
+      rim = 0.0;
+    } else {
+      if (abs(uv.y) >= 1.0) { return vec4<f32>(bg, 1.0); }
+      p = vec3<f32>(cosh(w.x), sinh(w.x), sin(w.y)) / cos(w.y);
+      len = FRAC_PI_2 / cos(w.y);
+      rim = 1.0 - 2.0 / len;
+    }
+  } else {
+    rim = dot(uv, uv) * u.proj.z;
+    // Inverse projection, as in Geometry::disk_to_point.
+    let a = 1.0 - u.proj.y;
+    let b = u.proj.y;
+    let ks = u.proj.x * 4.0 * dot(uv, uv);
+    let x0 = (sqrt(max(1.0 + ks * (a*a - b*b), 0.0)) - ks * a * b) / (1.0 + ks * a * a);
+    let g = a * x0 + b;
+    p = vec3<f32>(x0, 2.0 * g * uv);
+    // 2g tangentially, 2g²/(a + b x0) radially, equal only for the conformal
+    // μ = 1/2.
+    len = 2.0 * g * max(1.0, g / (a + b * x0));
+  }
+  if (rim > 0.999) { return vec4<f32>(bg, 1.0); }
   var t = u.m_inv * p;
 
   // In a cusp f32 may not resolve the pixel. The fold finds the pixel's
@@ -161,11 +197,9 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     if (!changed) { break; }
   }
 
-  // Analytic length of one pixel: 2g tangentially, 2g²/(a + b x0) radially,
-  // equal only for the conformal μ = 1/2; take the larger. Used instead of
-  // fwidth because derivatives need uniform control flow, which the early
-  // return and fold loop break.
-  let px = 2.0 * g * max(1.0, g / (a + b * x0)) / u.screen.z;
+  // Analytic length of one pixel. Used instead of fwidth because derivatives
+  // need uniform control flow, which the early return and fold loop break.
+  let px = len / u.screen.z;
 
   // More generally the fold maps the pixel back by an isometry of norm about
   // |t| / |t folded|, magnifying t's rounding to about that times ULP·scale.

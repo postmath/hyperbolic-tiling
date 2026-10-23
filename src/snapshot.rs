@@ -9,6 +9,7 @@ use std::fmt;
 use glam::{DMat3, DVec3};
 
 use crate::{
+    geom::Chart,
     quotient::Quotient,
     tiling::{Count, Tiling},
     ui::Settings,
@@ -23,10 +24,12 @@ pub struct Snapshot {
     /// The settings the picture depends on; the panel's visibility it does
     /// not, so that is left out.
     pub mu: f64,
+    /// The chart chosen, which the picture shows only where it applies.
+    pub chart: Chart,
     pub line_px: f32,
     pub vertex_px: f32,
     pub quotient_colors: bool,
-    /// Window size in physical pixels; it sets the disk radius.
+    /// Window size in physical pixels; it sets the scale.
     pub size: [u32; 2],
 }
 
@@ -36,6 +39,7 @@ impl Snapshot {
             tiling: *tiling,
             view: *view,
             mu: settings.mu,
+            chart: settings.chart,
             line_px: settings.line_px,
             vertex_px: settings.vertex_px,
             quotient_colors: settings.quotient_colors,
@@ -47,6 +51,7 @@ impl Snapshot {
     pub fn settings(&self, base: Settings) -> Settings {
         Settings {
             mu: self.mu,
+            chart: self.chart,
             line_px: self.line_px,
             vertex_px: self.vertex_px,
             quotient_colors: self.quotient_colors,
@@ -98,6 +103,8 @@ impl Snapshot {
             },
             tiling,
             mu: number("mu")?,
+            // Lines printed before there were charts have none.
+            chart: get("chart").map_or(Ok(Chart::Disk), parse_chart)?,
             line_px: number("line")? as f32,
             vertex_px: number("dot")? as f32,
             quotient_colors: get("colors")? == "1",
@@ -117,11 +124,12 @@ impl fmt::Display for Snapshot {
             .collect();
         write!(
             f,
-            "{VERSION},p={},q={},ell={},mu={},size={}x{},m={},frame={},line={},dot={},colors={}",
+            "{VERSION},p={},q={},ell={},mu={},chart={},size={}x{},m={},frame={},line={},dot={},colors={}",
             count_text(t.p),
             count_text(t.q),
             t.quotient.ell,
             self.mu,
+            chart_text(self.chart),
             self.size[0],
             self.size[1],
             m.join(":"),
@@ -131,6 +139,21 @@ impl fmt::Display for Snapshot {
             self.quotient_colors as u8,
         )
     }
+}
+
+fn chart_text(c: Chart) -> &'static str {
+    match c {
+        Chart::Disk => "disk",
+        Chart::HalfPlane => "half",
+        Chart::Band => "band",
+    }
+}
+
+fn parse_chart(s: &str) -> Result<Chart, String> {
+    [Chart::Disk, Chart::HalfPlane, Chart::Band]
+        .into_iter()
+        .find(|&c| chart_text(c) == s)
+        .ok_or(format!("chart: {s:?}"))
 }
 
 /// p or q in plain ASCII: 7, inf, or h3 for 2cosh δ = 3.
@@ -182,7 +205,7 @@ pub fn describe(tiling: &Tiling, view: &View) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geom::tests::MU;
+    use crate::geom::tests::DISK;
     use glam::DVec2;
 
     #[test]
@@ -197,10 +220,11 @@ mod tests {
             let t = Tiling::new(p, q).unwrap();
             let t = t.with_ell_stepped(1).unwrap();
             let mut v = View::new(t.geometry);
-            v.pan(DVec2::new(0.3, 0.1), DVec2::new(-0.2, 0.4), MU);
+            v.pan(DVec2::new(0.3, 0.1), DVec2::new(-0.2, 0.4), DISK);
             v.settle(&t);
             let settings = Settings {
                 mu: 0.3,
+                chart: Chart::Band,
                 line_px: 2.25,
                 quotient_colors: false,
                 ..Settings::default()
@@ -213,6 +237,10 @@ mod tests {
             assert_eq!(back.view.m.to_cols_array(), v.m.to_cols_array());
             assert_eq!(back.view.color_frame, v.color_frame);
             assert_eq!(back.size, [1900, 1000]);
+            assert_eq!(back.chart, Chart::Band);
+            let old = Snapshot::parse(&line.replace(",chart=band", "")).unwrap();
+            assert_eq!(old.chart, Chart::Disk);
+            assert!(Snapshot::parse(&line.replace("chart=band", "chart=x")).is_err());
             assert!(!line.contains(|c: char| " ;&#'\"".contains(c)), "{line}");
         }
     }

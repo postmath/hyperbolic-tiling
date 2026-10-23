@@ -8,13 +8,14 @@ use egui::{
 use winit::{event::WindowEvent, raw_window_handle::HasDisplayHandle, window::Window};
 
 use crate::{
-    geom::Geometry,
+    geom::{CONFORMAL_MU, Chart, Geometry, Projection},
     gpu::Overlay,
     tiling::{Count, MAX_LAMBDA, MAX_PQ, Tiling},
 };
 
 const USAGE: &str = "\
-Drag: pan. Right drag or Shift+drag: rotate. R: reset view.
+Drag: pan. Right drag or Shift+drag: rotate the disk, scale the half-plane
+about ∞, or slide the band along its axis. R: reset view.
 P / Shift+P: step p up / down. Q / Shift+Q: step q.
 L / Shift+L: step the prime ℓ for tile colors. C: toggle tile colors / two-tone.
 H: hide / show the control panel. D: show / hide debug info.
@@ -30,6 +31,8 @@ pub struct Settings {
     pub vertex_px: f32,
     /// The projection, see `Geometry::disk_to_point`.
     pub mu: f64,
+    /// The chart chosen, shown where it applies; see `Projection::new`.
+    pub chart: Chart,
     pub show_panel: bool,
     /// Show the view's state in the panel.
     pub debug: bool,
@@ -41,10 +44,17 @@ impl Default for Settings {
             quotient_colors: true,
             line_px: 1.5,
             vertex_px: 3.5,
-            mu: 0.5,
+            mu: CONFORMAL_MU,
+            chart: Chart::Disk,
             show_panel: true,
             debug: false,
         }
+    }
+}
+
+impl Settings {
+    pub fn projection(&self, g: Geometry) -> Projection {
+        Projection::new(self.chart, g, self.mu)
     }
 }
 
@@ -181,7 +191,7 @@ fn panel(
     });
     ui.separator();
 
-    projection(ui, &mut settings.mu, tiling.geometry);
+    projection(ui, settings, tiling.geometry);
     ui.separator();
 
     ui.add(Slider::new(&mut settings.line_px, 0.0..=5.0).text("Line width"));
@@ -205,17 +215,63 @@ fn presets(g: Geometry) -> [(&'static str, f64); 3] {
     match g {
         Geometry::Spherical => [
             ("Gnomonic", 0.0),
-            ("Stereographic", 0.5),
+            ("Stereographic", CONFORMAL_MU),
             ("Orthographic", 1.0),
         ],
-        _ => [("Klein", 0.0), ("Poincaré", 0.5), ("Gans", 1.0)],
+        _ => [("Klein", 0.0), ("Poincaré", CONFORMAL_MU), ("Gans", 1.0)],
     }
 }
 
-/// The slider runs over μ, which reaches λ = μ/(1-μ) = ∞; its number field
-/// shows and takes λ. Smart aim lands on exactly μ = 1/2 within a pixel of it.
-fn projection(ui: &mut Ui, mu: &mut f64, g: Geometry) {
-    ui.add_enabled_ui(g != Geometry::Euclidean, |ui| {
+/// Chart names, with the band as Mercator's on the sphere.
+fn charts(g: Geometry) -> [(&'static str, Chart); 3] {
+    let (disk, band) = match g {
+        Geometry::Spherical => ("Azimuthal", "Mercator"),
+        _ => ("Disk", "Band"),
+    };
+    [
+        (disk, Chart::Disk),
+        ("Half-plane", Chart::HalfPlane),
+        (band, Chart::Band),
+    ]
+}
+
+/// Why the panel cannot switch to `chart`, if it cannot.
+fn chart_unavailable(chart: Chart, g: Geometry, mu: f64) -> Option<&'static str> {
+    if g == Geometry::Euclidean {
+        Some("All projections of the plane agree.")
+    } else if !chart.applies(g) {
+        Some("The sphere has no points at infinity.")
+    } else if mu != CONFORMAL_MU {
+        Some("Only the conformal projection, λ = 1, has these charts.")
+    } else {
+        None
+    }
+}
+
+/// The chart, then the disk's projection. The slider runs over μ, which
+/// reaches λ = μ/(1-μ) = ∞; its number field shows and takes λ. Smart aim
+/// lands on exactly μ = 1/2 within a pixel of it.
+fn projection(ui: &mut Ui, settings: &mut Settings, g: Geometry) {
+    let shown = settings.projection(g).chart;
+    ui.horizontal(|ui| {
+        for (name, chart) in charts(g) {
+            let why = chart_unavailable(chart, g, settings.mu);
+            let button = egui::Button::selectable(shown == chart, name);
+            let mut response = ui.add_enabled(why.is_none(), button);
+            if let Some(why) = why {
+                response = response.on_disabled_hover_text(why);
+            }
+            if response.clicked() {
+                settings.chart = chart;
+            }
+        }
+    });
+    let why = match g {
+        Geometry::Euclidean => "All projections of the plane agree.",
+        _ => "Only the disk has other projections.",
+    };
+    let mu = &mut settings.mu;
+    ui.add_enabled_ui(g != Geometry::Euclidean && shown == Chart::Disk, |ui| {
         ui.horizontal(|ui| {
             for (name, preset) in presets(g) {
                 ui.selectable_value(mu, preset, name);
@@ -229,7 +285,7 @@ fn projection(ui: &mut Ui, mu: &mut f64, g: Geometry) {
         );
     })
     .response
-    .on_disabled_hover_text("All projections of the plane agree.");
+    .on_disabled_hover_text(why);
 }
 
 fn lambda_text(mu: f64) -> String {

@@ -4,7 +4,12 @@ use bytemuck::{Pod, Zeroable};
 use glam::DVec3;
 use winit::{event_loop::OwnedDisplayHandle, window::Window};
 
-use crate::{geom::ORIGIN, tiling::Tiling, ui::Settings, view::View};
+use crate::{
+    geom::{Chart, ORIGIN, Projection},
+    tiling::Tiling,
+    ui::Settings,
+    view::View,
+};
 
 /// Mirrors `struct U` in `tiling.wgsl`. Every member is 16-byte aligned, so
 /// there is no implicit padding.
@@ -18,9 +23,10 @@ pub struct Uniforms {
     pub mirrors: [[f32; 4]; 3],
     /// xyz = V, w = `Tiling::size`.
     pub vert: [f32; 4],
-    /// xy = resolution px, z = px per unit of disk radius; w unused.
+    /// xy = resolution px, z = px per screen unit; w unused.
     pub screen: [f32; 4],
-    /// x = curvature κ, y = projection μ, z = 1 / rim2 (0 without a rim); w unused.
+    /// x = curvature κ, y = projection μ, z = 1 / rim2 (0 without a rim),
+    /// w = chart: 0 disk, 1 half-plane, 2 band.
     pub proj: [f32; 4],
     /// x = line width px, y = vertex dot radius px; zw unused.
     pub style: [f32; 4],
@@ -33,7 +39,13 @@ pub struct Uniforms {
 }
 
 impl Uniforms {
-    pub fn new(view: &View, tiling: &Tiling, [w, h, r]: [f32; 3], settings: &Settings) -> Self {
+    pub fn new(
+        view: &View,
+        tiling: &Tiling,
+        [w, h, scale]: [f32; 3],
+        proj: Projection,
+        settings: &Settings,
+    ) -> Self {
         let v4 = |v: DVec3| v.as_vec3().extend(0.0).to_array();
         let u4 = |[x, y, z]: [u32; 3]| [x, y, z, 0];
         let (g, quot) = (tiling.geometry, &tiling.quotient);
@@ -52,12 +64,16 @@ impl Uniforms {
             vert: (tiling.vert.unwrap_or(ORIGIN).as_vec3())
                 .extend(tiling.size as f32)
                 .to_array(),
-            screen: [w, h, r, 0.0],
+            screen: [w, h, scale, 0.0],
             proj: [
                 g.kappa() as f32,
-                settings.mu as f32,
-                (1.0 / g.rim2(settings.mu)) as f32,
-                0.0,
+                proj.mu as f32,
+                (1.0 / g.rim2(proj.mu)) as f32,
+                match proj.chart {
+                    Chart::Disk => 0.0,
+                    Chart::HalfPlane => 1.0,
+                    Chart::Band => 2.0,
+                },
             ],
             style: [
                 settings.line_px,

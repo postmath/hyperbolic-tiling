@@ -3,7 +3,9 @@
 use glam::{DMat3, DVec2};
 
 use crate::{
-    geom::{Geometry, ORIGIN, rotate},
+    geom::{
+        Chart, Geometry, ORIGIN, Projection, band_at, half_plane_at, half_plane_similarity, rotate,
+    },
     quotient::{self, ModMat},
     tiling::{Tiling, mirror},
 };
@@ -11,6 +13,9 @@ use crate::{
 /// Pan drags hold points up to this fraction of the picture's rim2, where the
 /// shader starts its rim fade. Without a rim the whole screen is pannable.
 const PAN_RIM2_FRACTION: f64 = 0.98;
+/// In the charts, pan drags hold points up to the same distance from O as in
+/// the Poincaré disk: x0 = (1 + ρ²)/(1 - ρ²) for ρ² = PAN_RIM2_FRACTION.
+const PAN_X0_MAX: f64 = (1.0 + PAN_RIM2_FRACTION) / (1.0 - PAN_RIM2_FRACTION);
 /// Rotate drags ignore pointers this close to the center, where the angle is noise.
 const ROTATE_RHO_MIN: f64 = 0.02;
 /// The narrowest `Tiling::cusp_width` at the view center that pans may reach.
@@ -48,32 +53,54 @@ impl View {
         self.color_frame = quotient::IDENTITY;
     }
 
-    fn pan_rho2_max(&self, mu: f64) -> f64 {
-        PAN_RIM2_FRACTION * self.geometry.rim2(mu)
-    }
-
-    /// Whether a pan drag can hold the point at disk position `d`, in the
-    /// projection with parameter `mu` (see `Geometry::disk_to_point`).
-    pub fn pannable(&self, d: DVec2, mu: f64) -> bool {
-        d.length_squared() <= self.pan_rho2_max(mu)
-    }
-
-    /// Moves the picture so the point under disk position `from` ends up under
-    /// `to`. Points beyond `pannable` are clamped to its edge.
-    pub fn pan(&mut self, from: DVec2, to: DVec2, mu: f64) {
-        let clamp = |d: DVec2| {
-            if self.pannable(d, mu) {
-                d
-            } else {
-                d.normalize() * self.pan_rho2_max(mu).sqrt()
-            }
-        };
+    /// Whether a drag can hold the point at screen position `d`.
+    pub fn pannable(&self, d: DVec2, proj: Projection) -> bool {
         let g = self.geometry;
-        let (p, q) = (
-            g.disk_to_point(clamp(from), mu),
-            g.disk_to_point(clamp(to), mu),
-        );
+        match proj.chart {
+            Chart::Disk => d.length_squared() <= PAN_RIM2_FRACTION * g.rim2(proj.mu),
+            _ => g.on_screen(d, proj) && g.screen_to_point(d, proj).x <= PAN_X0_MAX,
+        }
+    }
+
+    /// `d`, or if it is not `pannable`, where the segment to it from the
+    /// center, which always is, leaves that region.
+    fn clamp(&self, d: DVec2, proj: Projection) -> DVec2 {
+        if self.pannable(d, proj) {
+            return d;
+        }
+        let (mut inside, mut outside) = (0.0, 1.0);
+        for _ in 0..60 {
+            let mid = 0.5 * (inside + outside);
+            if self.pannable(mid * d, proj) {
+                inside = mid;
+            } else {
+                outside = mid;
+            }
+        }
+        inside * d
+    }
+
+    /// Moves the picture so the point under screen position `from` ends up
+    /// under `to`. Points beyond `pannable` are clamped to its edge.
+    pub fn pan(&mut self, from: DVec2, to: DVec2, proj: Projection) {
+        let g = self.geometry;
+        let [p, q] = [from, to].map(|d| g.screen_to_point(self.clamp(d, proj), proj));
         self.m = g.translate(p, q) * self.m;
+    }
+
+    /// In the half-plane, moves the point under `from` to `to` by the motion
+    /// w -> a w + b, which fixes ∞. Clamped like `pan`.
+    pub fn scale(&mut self, from: DVec2, to: DVec2, proj: Projection) {
+        let [w1, w2] = [from, to].map(|d| half_plane_at(self.clamp(d, proj)));
+        let a = w2.y / w1.y;
+        self.m = half_plane_similarity(a, w2.x - a * w1.x) * self.m;
+    }
+
+    /// In the band, translates along its axis by the drag's horizontal part.
+    pub fn slide(&mut self, from: DVec2, to: DVec2) {
+        let g = self.geometry;
+        let s = band_at(to - from).x;
+        self.m = g.translate(ORIGIN, g.band_to_point(DVec2::new(s, 0.0))) * self.m;
     }
 
     /// Rotates about the screen center by the change in the pointer's angle.
@@ -124,9 +151,10 @@ impl View {
 mod tests {
     use super::*;
     use crate::{
-        geom::tests::{ALL, MU, MUS, assert_isometry, in_picture},
+        geom::tests::{ALL, DISK, MU, assert_isometry, charts, on_screen, projections},
         quotient::{E_C, IDENTITY},
     };
+    use glam::DVec3;
     use std::f64::consts::PI;
 
     /// One tiling per geometry.
@@ -135,22 +163,76 @@ mod tests {
     #[test]
     fn grabbed_point_stays_under_cursor() {
         for g in ALL {
-            for mu in MUS {
+            for proj in projections(g) {
                 let mut v = View::new(g);
                 let path = [
                     DVec2::new(0.1, 0.2),
                     DVec2::new(-0.3, 0.5),
                     DVec2::new(0.6, -0.4),
                 ]
-                .map(|d| in_picture(g, mu, d));
-                let grabbed = v.m.inverse() * g.disk_to_point(path[0], mu);
+                .map(|d| on_screen(g, proj, d));
+                let grabbed = v.m.inverse() * g.screen_to_point(path[0], proj);
                 for w in path.windows(2) {
-                    v.pan(w[0], w[1], mu);
+                    v.pan(w[0], w[1], proj);
                 }
-                let d = g.point_to_disk(v.m * grabbed, mu);
-                assert!((d - path[2]).length() < 1e-9);
+                let d = g.point_to_screen(v.m * grabbed, proj);
+                assert!((d - path[2]).length() < 1e-9, "{proj:?}");
             }
         }
+    }
+
+    /// The half-plane's scale drag holds the grabbed point too, and keeps
+    /// whatever is at ∞ there.
+    #[test]
+    fn scale_holds_the_point_and_fixes_infinity() {
+        let g = Geometry::Hyperbolic;
+        let proj = Projection::new(Chart::HalfPlane, g, MU);
+        let mut v = View::new(g);
+        let path = [
+            DVec2::new(0.1, 0.2),
+            DVec2::new(-0.3, -0.5),
+            DVec2::new(0.6, 0.4),
+        ];
+        let grabbed = v.m.inverse() * g.screen_to_point(path[0], proj);
+        for w in path.windows(2) {
+            v.scale(w[0], w[1], proj);
+        }
+        assert!((g.point_to_screen(v.m * grabbed, proj) - path[2]).length() < 1e-9);
+        let infinity = DVec3::new(1.0, 0.0, 1.0);
+        assert!((v.m * infinity).cross(infinity).length() < 1e-12);
+        assert_isometry(g, v.m, 1e-12);
+    }
+
+    /// The band's slide drag moves along the axis, by the drag's horizontal
+    /// part.
+    #[test]
+    fn slide_moves_along_the_axis() {
+        for g in [Geometry::Hyperbolic, Geometry::Spherical] {
+            let proj = Projection::new(Chart::Band, g, MU);
+            let mut v = View::new(g);
+            v.slide(DVec2::new(0.1, 0.5), DVec2::new(-0.2, -0.3));
+            let d = DVec2::new(0.4, 0.3);
+            let moved = g.point_to_screen(v.m * g.screen_to_point(d, proj), proj);
+            assert!((moved - DVec2::new(0.1, 0.3)).length() < 1e-12, "{g:?}");
+            assert_isometry(g, v.m, 1e-12);
+        }
+    }
+
+    /// A drag toward the edge of a chart stops where the Poincaré disk's
+    /// would, however far past it the pointer goes.
+    #[test]
+    fn chart_pans_are_clamped() {
+        let g = Geometry::Hyperbolic;
+        let half_plane = Projection::new(Chart::HalfPlane, g, MU);
+        for proj in charts(g) {
+            let mut v = View::new(g);
+            v.pan(DVec2::ZERO, DVec2::new(0.3, -5.0), proj);
+            let center = v.m * ORIGIN;
+            assert!((center.x - PAN_X0_MAX).abs() < 1e-6, "{proj:?}: {center}");
+        }
+        let mut v = View::new(g);
+        v.scale(DVec2::ZERO, DVec2::new(0.0, -5.0), half_plane);
+        assert!(((v.m * ORIGIN).x - PAN_X0_MAX).abs() < 1e-6);
     }
 
     /// Folded tiling point, parity and tile color under screen point `d`, as
@@ -181,11 +263,11 @@ mod tests {
             for i in 0..3000 {
                 let a = 0.3 * (i as f64 * 0.01).sin();
                 let (from, to) = (DVec2::ZERO, DVec2::from_angle(a) * 0.05);
-                settled.pan(from, to, MU);
+                settled.pan(from, to, DISK);
                 settled.rotate(DVec2::X * 0.5, DVec2::from_angle(0.01) * 0.5);
                 settled.settle(&t);
                 if i < 50 {
-                    raw.pan(from, to, MU);
+                    raw.pan(from, to, DISK);
                     raw.rotate(DVec2::X * 0.5, DVec2::from_angle(0.01) * 0.5);
                 }
                 if i == 49 {
@@ -278,7 +360,7 @@ mod tests {
                 let at = v.m * target;
                 let toward = DVec2::new(at.y, at.z).normalize() * at.x.signum();
                 let before = v;
-                v.pan(0.05 * toward, DVec2::ZERO, MU);
+                v.pan(0.05 * toward, DVec2::ZERO, DISK);
                 v.settle(&t);
                 let deep = v.too_deep(&t);
                 if deep {

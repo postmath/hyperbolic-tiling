@@ -42,6 +42,10 @@ A panel at the top left holds the main controls:
   and the dot colors tell hyperbolic, Euclidean and spherical pairs apart.
 * **Tile colors mod ℓ:** a toggle, plus a stepper for the prime ℓ and the
   resulting color count.
+* **Chart:** the disk, the upper half-plane, or the band (Mercator on the
+  sphere). The other two are tied to the disk: the half-plane's ∞ is the top
+  of the disk's rim, and the band's axis is its horizontal diameter. They
+  need the conformal projection, λ = 1.
 * **Projection:** presets for the named projections, and a slider for the
   projection point λ in between; type a value into its number field for an
   exact one.
@@ -52,8 +56,8 @@ Mouse and keyboard:
 
 | input | action |
 |---|---|
-| left drag | pan; the grabbed point stays under the cursor, and leaving the hyperbolic disk ends the drag |
-| right drag, or Shift+left drag | rotate about the window centre |
+| left drag | pan; the grabbed point stays under the cursor, and leaving the hyperbolic picture ends the drag |
+| right drag, or Shift+left drag | rotate the disk about the window centre; scale the half-plane about a point on its boundary, keeping ∞ fixed and the grabbed point under the cursor; slide the band along its axis |
 | P / Shift+P | step p up / down |
 | Q / Shift+Q | step q up / down |
 | L / Shift+L | step the color prime ℓ up / down |
@@ -90,7 +94,7 @@ coloring.
 * [doc/math-guide.md](doc/math-guide.md) covers the mathematics from linear
   algebra up: the hyperboloid model, isometries, triangle groups and folding,
   holonomy, the finite quotients behind the colors, and the one model that
-  covers all three curvatures.
+  covers all three curvatures, and the half-plane and band charts.
 * [doc/implementation-guide.md](doc/implementation-guide.md) walks through
   the code one milestone (commit) at a time: wgpu and winit setup, the
   shader, input handling, precision, and testing.

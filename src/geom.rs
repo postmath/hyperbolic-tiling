@@ -7,11 +7,92 @@
 //! from x to the line (sinh, identity, sin). For κ = -1, K is the Lorentz form.
 //! Isometries are 3x3 matrices preserving both forms.
 
+use std::f64::consts::FRAC_PI_2;
+
 use glam::{DMat3, DVec2, DVec3};
 
 use crate::tiling::Count;
 
 pub const ORIGIN: DVec3 = DVec3::X;
+/// The μ of the Poincaré disk and stereographic projection, the conformal one.
+pub const CONFORMAL_MU: f64 = 0.5;
+
+/// What the screen shows: the disk of `Geometry::disk_to_point`, or a
+/// conformal chart tied to it (math §13).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chart {
+    Disk,
+    /// The upper half-plane, with ∞ at the top of the disk's rim.
+    HalfPlane,
+    /// The band along the disk's horizontal diameter; Mercator on the sphere.
+    Band,
+}
+
+impl Chart {
+    /// Whether `g` has this chart, other than as the disk itself.
+    pub fn applies(self, g: Geometry) -> bool {
+        match self {
+            Self::Disk => true,
+            Self::HalfPlane => g == Geometry::Hyperbolic,
+            Self::Band => g != Geometry::Euclidean,
+        }
+    }
+}
+
+/// How screen positions map to the surface, see `Geometry::screen_to_point`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Projection {
+    pub chart: Chart,
+    /// See `Geometry::disk_to_point`; `CONFORMAL_MU` unless `chart` is the disk.
+    pub mu: f64,
+}
+
+impl Projection {
+    /// `chart` if `g` has it and the disk at `mu` is conformal, else the disk.
+    pub fn new(chart: Chart, g: Geometry, mu: f64) -> Self {
+        let chart = if chart.applies(g) && mu == CONFORMAL_MU {
+            chart
+        } else {
+            Chart::Disk
+        };
+        Self { chart, mu }
+    }
+}
+
+/// Half-plane coordinates w = u + iv of screen position `d`: O at i, and
+/// the boundary line one screen unit below it.
+pub fn half_plane_at(d: DVec2) -> DVec2 {
+    d + DVec2::Y
+}
+
+/// Band coordinates (s, t) of screen position `d`: the hyperbolic band's
+/// edges t = ±π/2 one screen unit above and below O.
+pub fn band_at(d: DVec2) -> DVec2 {
+    FRAC_PI_2 * d
+}
+
+/// The hyperbolic point at w = u + iv, v > 0, in the upper half-plane whose ∞
+/// is the null vector (1, 0, 1).
+pub fn half_plane_to_point(w: DVec2) -> DVec3 {
+    let q = w.length_squared();
+    DVec3::new(1.0 + q, 2.0 * w.x, q - 1.0) / (2.0 * w.y)
+}
+
+#[cfg(test)]
+pub fn point_to_half_plane(x: DVec3) -> DVec2 {
+    DVec2::new(x.y, 1.0) / (x.x - x.z)
+}
+
+/// The hyperbolic motion w -> a w + b of the half-plane, a > 0: it fixes ∞.
+/// It acts linearly on (x0 - x2, x0 + x2, x1) = (1, |w|², u) / v.
+pub fn half_plane_similarity(a: f64, b: f64) -> DMat3 {
+    let image = |x: DVec3| {
+        let (h, k, c) = (x.x - x.z, x.x + x.z, x.y);
+        let (h, k, c) = (h / a, a * k + 2.0 * b * c + b * b / a * h, c + b / a * h);
+        DVec3::new(0.5 * (k + h), c, 0.5 * (k - h))
+    };
+    DMat3::from_cols(image(DVec3::X), image(DVec3::Y), image(DVec3::Z))
+}
 
 /// The geometry a {p,q} tiling lives in, for p, q >= 3, possibly infinite.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -113,6 +194,54 @@ impl Geometry {
         DVec2::new(x.y, x.z) / (2.0 * ((1.0 - mu) * x.x + mu))
     }
 
+    /// The point at band coordinates (s, t): s along the x1 axis, t across it,
+    /// stretched to make the chart conformal; for κ = 1, Mercator's.
+    pub fn band_to_point(self, w: DVec2) -> DVec3 {
+        let (s, t) = (w.x, w.y);
+        match self {
+            Self::Spherical => DVec3::new(s.cos(), s.sin(), t.sinh()) / t.cosh(),
+            Self::Euclidean => DVec3::new(1.0, s, t),
+            Self::Hyperbolic => DVec3::new(s.cosh(), s.sinh(), t.sin()) / t.cos(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn point_to_band(self, x: DVec3) -> DVec2 {
+        match self {
+            Self::Spherical => DVec2::new(x.y.atan2(x.x), x.z.atanh()),
+            Self::Euclidean => DVec2::new(x.y, x.z),
+            Self::Hyperbolic => DVec2::new((x.y / x.x).atanh(), x.z.atan()),
+        }
+    }
+
+    /// The point at screen position `d`, in units of the chart's scale.
+    pub fn screen_to_point(self, d: DVec2, proj: Projection) -> DVec3 {
+        match proj.chart {
+            Chart::Disk => self.disk_to_point(d, proj.mu),
+            Chart::HalfPlane => half_plane_to_point(half_plane_at(d)),
+            Chart::Band => self.band_to_point(band_at(d)),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn point_to_screen(self, x: DVec3, proj: Projection) -> DVec2 {
+        match proj.chart {
+            Chart::Disk => self.point_to_disk(x, proj.mu),
+            Chart::HalfPlane => point_to_half_plane(x) - DVec2::Y,
+            Chart::Band => self.point_to_band(x) / FRAC_PI_2,
+        }
+    }
+
+    /// Whether screen position `d` shows a point: inside the disk's `rim2`,
+    /// above the half-plane's boundary, or between the hyperbolic band's edges.
+    pub fn on_screen(self, d: DVec2, proj: Projection) -> bool {
+        match proj.chart {
+            Chart::Disk => d.length_squared() < self.rim2(proj.mu),
+            Chart::HalfPlane => d.y > -1.0,
+            Chart::Band => self != Self::Hyperbolic || d.y.abs() < 1.0,
+        }
+    }
+
     /// ρ² at the edge of the picture of `disk_to_point`: the rim of the
     /// hyperbolic disk, or for μ > 1/2 the horizon of the sphere. Infinite if
     /// the picture fills the plane.
@@ -175,6 +304,35 @@ pub(crate) mod tests {
     pub const MUS: [f64; 5] = [0.0, 0.3, 0.5, 0.8, 1.0];
     /// Poincaré, for tests about something else.
     pub const MU: f64 = 0.5;
+    pub const DISK: Projection = Projection {
+        chart: Chart::Disk,
+        mu: MU,
+    };
+
+    /// The disk at each of `MUS`, and the charts `g` has.
+    pub fn projections(g: Geometry) -> Vec<Projection> {
+        let disks = MUS.map(|mu| Projection::new(Chart::Disk, g, mu));
+        let charts = [Chart::HalfPlane, Chart::Band]
+            .into_iter()
+            .filter(|c| c.applies(g))
+            .map(|c| Projection::new(c, g, MU));
+        disks.into_iter().chain(charts).collect()
+    }
+
+    pub fn charts(g: Geometry) -> impl Iterator<Item = Projection> {
+        projections(g)
+            .into_iter()
+            .filter(|p| p.chart != Chart::Disk)
+    }
+
+    /// `d` scaled into the picture of the disk, if it has a rim; charts take
+    /// |d.y| < 1 as it is.
+    pub fn on_screen(g: Geometry, proj: Projection, d: DVec2) -> DVec2 {
+        match proj.chart {
+            Chart::Disk => in_picture(g, proj.mu, d),
+            _ => d,
+        }
+    }
 
     /// `d` relative to the rim of the picture, if there is one.
     pub fn in_picture(g: Geometry, mu: f64, d: DVec2) -> DVec2 {
@@ -238,6 +396,86 @@ pub(crate) mod tests {
                 assert!((along(d.normalize()) - radial).abs() < 1e-5);
             }
         }
+    }
+
+    #[test]
+    fn chart_round_trip() {
+        for g in ALL {
+            for proj in projections(g) {
+                for d in [DVec2::ZERO, DVec2::new(0.3, -0.5), DVec2::new(-1.7, 0.9)] {
+                    if proj.chart == Chart::Disk && d.length() >= 1.0 {
+                        continue;
+                    }
+                    let d = on_screen(g, proj, d);
+                    assert!(g.on_screen(d, proj));
+                    let x = g.screen_to_point(d, proj);
+                    assert!(on_surface(g, x), "{proj:?} {d}");
+                    assert!((g.point_to_screen(x, proj) - d).length() < 1e-12);
+                }
+            }
+        }
+        // ∞ of the half-plane is the top of the disk's rim.
+        let x = half_plane_to_point(DVec2::new(0.3, 1e6));
+        assert_close(x / x.x, DVec3::new(1.0, 0.0, 1.0), 1e-6);
+    }
+
+    /// Up to scale, every chart looks like the disk at the center: the same
+    /// way up, and not mirrored.
+    #[test]
+    fn charts_match_the_disk_at_the_center() {
+        let e = 1e-5;
+        for g in ALL {
+            for proj in projections(g) {
+                let unit = g.dist(ORIGIN, g.screen_to_point(e * DVec2::X, proj)) / e;
+                for dir in [DVec2::X, DVec2::Y, DVec2::new(-0.6, 0.8)] {
+                    let x = g.screen_to_point(e * dir, proj);
+                    let d = g.point_to_disk(x, MU) * 2.0 / (unit * e);
+                    assert!((d - dir).length() < 1e-4, "{proj:?} {dir}: {d}");
+                }
+            }
+        }
+    }
+
+    /// The shader's pixel size in the charts: model length per screen unit,
+    /// in every direction, 1/v in the half-plane and π/2 / cos_-κ t in the
+    /// band.
+    #[test]
+    fn length_per_screen_unit_in_charts() {
+        let h = 1e-6;
+        for g in ALL {
+            for proj in charts(g) {
+                for d in [DVec2::new(0.3, 0.4), DVec2::new(-1.2, -0.7)] {
+                    let x = g.screen_to_point(d, proj);
+                    let expected = match proj.chart {
+                        Chart::HalfPlane => 1.0 / half_plane_at(d).y,
+                        _ => {
+                            let t = band_at(d).y;
+                            FRAC_PI_2
+                                / if g == Geometry::Spherical {
+                                    t.cosh()
+                                } else {
+                                    t.cos()
+                                }
+                        }
+                    };
+                    for dir in [DVec2::X, DVec2::Y, DVec2::new(0.6, 0.8)] {
+                        let along = g.dist(x, g.screen_to_point(d + h * dir, proj)) / h;
+                        assert!((along - expected).abs() < 1e-5 * expected, "{proj:?} {d}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn half_plane_similarity_is_affine_and_fixes_infinity() {
+        let g = Geometry::Hyperbolic;
+        let (a, b) = (1.7, -0.4);
+        let m = half_plane_similarity(a, b);
+        assert_isometry(g, m, 1e-12);
+        let w = DVec2::new(0.3, 0.8);
+        let image = point_to_half_plane(m * half_plane_to_point(w));
+        assert!((image - (a * w + DVec2::new(b, 0.0))).length() < 1e-12);
     }
 
     #[test]

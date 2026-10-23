@@ -18,6 +18,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
+use geom::{Chart, Projection};
 use gpu::{Renderer, Uniforms};
 use snapshot::Snapshot;
 use tiling::Tiling;
@@ -26,13 +27,23 @@ use view::View;
 // std's Instant panics in the browser.
 use web_time::Instant;
 
-/// Gap between the disk and the nearer window edge, px.
+/// Gap between the edge of the picture and the window edge, px.
 const MARGIN_PX: f32 = 8.0;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Drag {
     Pan,
-    Rotate,
+    /// Right or Shift drag: rotate the disk, scale the half-plane about ∞, or
+    /// slide the band along its axis.
+    Secondary,
+}
+
+impl Drag {
+    /// Whether the drag keeps the grabbed point under the cursor, so needs a
+    /// point it can hold, see `View::pannable`.
+    fn holds(self, chart: Chart) -> bool {
+        self == Self::Pan || chart == Chart::HalfPlane
+    }
 }
 
 /// The window and what draws into it.
@@ -51,17 +62,24 @@ struct Ready {
 }
 
 impl Ready {
-    /// (width, height, disk radius) in px.
-    fn geometry(&self) -> (f32, f32, f32) {
+    /// (width, height, scale) in px, the scale per screen unit: the disk's
+    /// radius, or the distance from the center to the half-plane's boundary
+    /// and to the band's edges.
+    fn geometry(&self, chart: Chart) -> (f32, f32, f32) {
         let (w, h) = self.renderer.size();
         let (w, h) = (w as f32, h as f32);
-        (w, h, (0.5 * w.min(h) - MARGIN_PX).max(1.0))
+        let fit = match chart {
+            Chart::Disk => w.min(h),
+            Chart::HalfPlane | Chart::Band => h,
+        };
+        (w, h, (0.5 * fit - MARGIN_PX).max(1.0))
     }
 
-    /// Window pixel position to disk coordinates, y up as in the shader.
-    fn to_disk(&self, pos: PhysicalPosition<f64>) -> DVec2 {
-        let (w, h, r) = self.geometry();
-        DVec2::new(pos.x - 0.5 * w as f64, 0.5 * h as f64 - pos.y) / r as f64
+    /// Window pixel position to screen coordinates: from the center, y up as
+    /// in the shader, in units of the scale.
+    fn to_screen(&self, pos: PhysicalPosition<f64>, chart: Chart) -> DVec2 {
+        let (w, h, scale) = self.geometry(chart);
+        DVec2::new(pos.x - 0.5 * w as f64, 0.5 * h as f64 - pos.y) / scale as f64
     }
 }
 
@@ -93,6 +111,10 @@ impl Model {
             drag: None,
             repaint_at: None,
         }
+    }
+
+    fn projection(&self) -> Projection {
+        self.settings.projection(self.tiling.geometry)
     }
 
     fn title(&self) -> String {
@@ -153,8 +175,15 @@ impl Model {
             None => out.repaint_after,
         };
         self.repaint_at = Instant::now().checked_add(repaint_after);
-        let (w, h, r) = gfx.geometry();
-        let u = Uniforms::new(&self.view, &self.tiling, [w, h, r], &self.settings);
+        let proj = self.projection();
+        let (w, h, scale) = gfx.geometry(proj.chart);
+        let u = Uniforms::new(
+            &self.view,
+            &self.tiling,
+            [w, h, scale],
+            proj,
+            &self.settings,
+        );
         gfx.renderer.render(&u, out.overlay);
     }
 
@@ -218,32 +247,34 @@ impl Model {
                 ..
             } => self.drag = None,
             WindowEvent::MouseInput { button, .. } if !egui.consumed => {
-                self.drag = match button {
-                    MouseButton::Left if self.modifiers.shift_key() => Some(Drag::Rotate),
-                    MouseButton::Left
-                        if self.cursor.is_some_and(|c| {
-                            self.view.pannable(gfx.to_disk(c), self.settings.mu)
-                        }) =>
-                    {
-                        Some(Drag::Pan)
-                    }
-                    MouseButton::Right => Some(Drag::Rotate),
-                    _ => self.drag,
+                let proj = self.projection();
+                let drag = match button {
+                    MouseButton::Left if self.modifiers.shift_key() => Some(Drag::Secondary),
+                    MouseButton::Left => Some(Drag::Pan),
+                    MouseButton::Right => Some(Drag::Secondary),
+                    _ => None,
                 };
+                let held = self
+                    .cursor
+                    .is_some_and(|c| self.view.pannable(gfx.to_screen(c, proj.chart), proj));
+                if let Some(drag) = drag.filter(|d| held || !d.holds(proj.chart)) {
+                    self.drag = Some(drag);
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 if let (Some(drag), Some(old)) = (self.drag, self.cursor) {
-                    let (from, to) = (gfx.to_disk(old), gfx.to_disk(position));
+                    let proj = self.projection();
+                    let [from, to] = [old, position].map(|p| gfx.to_screen(p, proj.chart));
                     let before = self.view;
-                    match drag {
-                        Drag::Pan => {
-                            self.view.pan(from, to, self.settings.mu);
-                            // Past the rim the grabbed point can't follow; let go.
-                            if !self.view.pannable(to, self.settings.mu) {
-                                self.drag = None;
-                            }
-                        }
-                        Drag::Rotate => self.view.rotate(from, to),
+                    match (drag, proj.chart) {
+                        (Drag::Pan, _) => self.view.pan(from, to, proj),
+                        (Drag::Secondary, Chart::Disk) => self.view.rotate(from, to),
+                        (Drag::Secondary, Chart::HalfPlane) => self.view.scale(from, to, proj),
+                        (Drag::Secondary, Chart::Band) => self.view.slide(from, to),
+                    }
+                    // Past the edge the grabbed point can't follow; let go.
+                    if drag.holds(proj.chart) && !self.view.pannable(to, proj) {
+                        self.drag = None;
                     }
                     self.view.settle(&self.tiling);
                     if self.view.too_deep(&self.tiling) {
