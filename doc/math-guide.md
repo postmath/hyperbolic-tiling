@@ -809,6 +809,7 @@ L key steps through admissible primes.
 | fold near a cusp | $\sim2/(1-\rho^2)$ sweeps, unbounded | cusp step in closed form (§11.2) |
 | deep in a cusp | coordinates $\sim1/h$, cusp width $h$ | pans stop at $h=3\cdot10^{-3}$ (§11.2) |
 | pixels deeper than the centre | error $\delta(1+\lvert u\rvert/h)$ in the strip | fade features below 3–6 times it (§11.2) |
+| pixels far from D in a deep view | the fold magnifies rounding by about $\lvert t\rvert/\lvert t_{\text{folded}}\rvert$ | fade to the background from 1 to 4 px of estimated error (§11.2) |
 | fan of an ideal vertex aliases | tiles of different colours below a pixel | box filter over the tiles a pixel spans, up to a period of $\ell$ (§11.2) |
 | lost points overflow | a jump lands off the sheet, then sweeps diverge | stop the fold at $\lvert t\rvert>10^{15}$ |
 | shades alias in thin triangles | two tones alternate below a pixel | blend to the mean below 2 px (§11.2) |
@@ -1105,6 +1106,14 @@ and the shader fades out lines, dots and shades where $h$ is below 3 to 6
 times that error, a margin calibrated against an f64 fold. Such pixels near
 an ideal $O$ lie in the central apeirogon (they are inside its horoball
 $h<h(E)$), so they still get its colour.
+
+**Elsewhere.** Outside the cusps the fold maps a pixel back by an isometry
+of norm about $|t|/|t_{\text{folded}}|$, which magnifies its rounding to about
+that times $\varepsilon\|M^{-1}\||p|$. Compared with an f64 fold, no pixel was
+off by a pixel while that estimate was under 4 px, so pixels fade to the
+background from 1 to 4 px, as at the rim. A lost f32 fold can end far out or
+on the lower sheet; then only $|t|$ is a safe bound. Inside a cusp's
+horoball a lost pixel keeps the colour it is known to have.
 
 **The fan at an ideal vertex.** The tiles around an ideal $V$ are
 $(ac)^mP$, $m\in\mathbb Z$, so around the vertex $gV$ of a pixel's triangle

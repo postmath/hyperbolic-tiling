@@ -460,28 +460,42 @@ mod tests {
         }
     }
 
-    /// Points where the cusp width at an ideal O is below its value at E lie
-    /// in the apeirogon of the fundamental triangle: their fold reflects only
-    /// in lines through O. The shader relies on this where f32 loses them.
+    /// Points where the cusp width at an ideal corner is below its value at E
+    /// lie in the tiles around that corner: for an ideal O in the central
+    /// apeirogon, whose fold reflects only in lines through O, and for an
+    /// ideal V in the fan around it, whose fold reflects only in lines
+    /// through V. The shader relies on this where f32 loses such points.
     #[test]
-    fn deep_in_an_ideal_center_is_the_central_apeirogon() {
-        for q in [F(3), F(27), INF] {
-            let t = Tiling::new(INF, q).unwrap();
+    fn deep_in_an_ideal_corner_are_its_tiles() {
+        for (p, q, j) in [
+            (INF, F(3), 1),
+            (INF, F(27), 1),
+            (INF, INF, 1),
+            (F(3), INF, 2),
+            (F(5), INF, 2),
+            (INF, INF, 2),
+        ] {
+            let t = Tiling::new(p, q).unwrap();
             let g = t.geometry;
             let e = g.meet(t.mirrors[1], t.mirrors[2]).unwrap();
-            let h_e = t.cusp_width(1, e);
+            let h_e = t.cusp_width(j, e);
+            // The other mirror, which does not pass through the corner.
+            let other = 3 - j;
             let mut inside = 0;
             for i in 0..4096 {
                 let rho = 1.0 - 0.5f64.powi(i % 12 + 1);
                 let d = rho * DVec2::from_angle(i as f64 * 0.0137);
                 let x = g.disk_to_point(d, MU);
-                if t.cusp_width(1, x) < h_e {
+                if t.cusp_width(j, x) < h_e {
                     let f = t.fold(x);
-                    assert!(f.word.iter().all(|line| line[2] == 0), "{q} at {d}");
+                    assert!(
+                        f.word.iter().all(|line| line[other] == 0),
+                        "{{{p},{q}}} at {d}"
+                    );
                     inside += 1;
                 }
             }
-            assert!(inside > 100, "{q}: {inside}");
+            assert!(inside > 100, "{{{p},{q}}}: {inside}");
         }
     }
 }

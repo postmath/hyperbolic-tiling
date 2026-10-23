@@ -1,6 +1,8 @@
 struct U {
   m_inv: mat3x3<f32>,        // screen frame -> tiling frame
-  mirrors: array<vec4<f32>, 3>,  // xyz = covector c (see geom.rs), w = 1 if parallel to OV
+  // xyz = covector c (see geom.rs), w = for a mirror parallel to OV the cusp
+  // width at E, which bounds the cusp's horoball, else 0
+  mirrors: array<vec4<f32>, 3>,
   vert: vec4<f32>,           // xyz = V, w = Tiling::size
   screen: vec4<f32>,         // xy = resolution px, z = px per unit of disk radius
   proj: vec4<f32>,           // x = curvature κ, y = projection μ, z = 1 / rim2 or 0
@@ -87,11 +89,14 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   // fold, f32 misplaces vertex dots only below h = 2.5 δ(1 + |u|/h), so the
   // fade runs from 3 to 6 times that. Pixels that deep in the
   // cusp of an ideal O lie in the central apeirogon, whose color is known
-  // (test: deep_in_an_ideal_center_is_the_central_apeirogon).
+  // (test: deep_in_an_ideal_corner_are_its_tiles).
   let mi = max(abs(u.m_inv[0]), max(abs(u.m_inv[1]), abs(u.m_inv[2])));
-  let delta = 4.0 * ULP * max(mi.x, max(mi.y, mi.z)) * max(abs(p.x), max(abs(p.y), abs(p.z)));
+  // Where f32 rounds t to about ULP · scale.
+  let scale = max(mi.x, max(mi.y, mi.z)) * max(abs(p.x), max(abs(p.y), abs(p.z)));
+  let delta = 4.0 * ULP * scale;
+  let size_t = max(abs(t.x), max(abs(t.y), abs(t.z)));
   var trust = vec2<f32>(1.0);  // in the cusps at O and at V
-  var central = false;
+  var widths = vec2<f32>(0.0);  // the cusp widths h there, if ideal
   var h_v = 0.0;  // the width of the cusp at V, if V is ideal
   for (var j = 1; j < 3; j++) {
     if (u.mirrors[j].w > 0.0) {
@@ -99,12 +104,10 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
       let h = dot(t, n);
       let err = delta * (1.0 + abs(dot(t, u.mirrors[0].xyz)) / max(h, 1e-30));
       trust[j - 1] = saturate(h / (3.0 * err) - 1.0);
-      // For p = ∞ the frame has E at the origin, so n.x is the width at E.
-      central = central || (j == 1 && h < n.x);
+      widths[j - 1] = h;
       if (j == 2) { h_v = h; }
     }
   }
-  let trusted = min(trust.x, trust.y);
 
   // acc = color_frame · φ(r_first) ⋯ φ(r_last): φ of the tile's group element.
   let ell = max(u.ell.x, 1u);
@@ -163,6 +166,30 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   // fwidth because derivatives need uniform control flow, which the early
   // return and fold loop break.
   let px = 2.0 * g * max(1.0, g / (a + b * x0)) / u.screen.z;
+
+  // More generally the fold maps the pixel back by an isometry of norm about
+  // |t| / |t folded|, magnifying t's rounding to about that times ULP·scale.
+  // A fold that f32 has lost can end anywhere, typically far out or on the
+  // other sheet; then only |t| is safe. Compared with an f64 fold, f32
+  // misplaces no pixel by a pixel or more while the estimate is under 4 px,
+  // and `lost` rises from 1 to 4 px. In a cusp's horoball a lost pixel is
+  // still known to lie in the central apeirogon or the fan, so it lowers that
+  // cusp's trust. Elsewhere it fades to the background, as at the rim, where
+  // this is what gives out.
+  let size_f = max(abs(t.x), max(abs(t.y), abs(t.z)));
+  let astray = (u.proj.x < 0.0 && t.x < 0.0) || size_f > 2.0 * size_t;
+  let magnified = select(size_t / max(size_f, 1.0), size_t, astray);
+  let lost = smoothstep(1.0, 4.0, ULP * magnified * scale / px);
+  // How far inside each horoball h < h(E), over its boundary's last pixel:
+  // for a null covector the gradient of h has length h, so h changes by
+  // about h·px per pixel.
+  let levels = vec2<f32>(u.mirrors[1].w, u.mirrors[2].w);
+  let depth = saturate((levels - widths) / max(widths * px, vec2<f32>(1e-30)) + 0.5);
+  let within = select(vec2<f32>(0.0), depth, levels > vec2<f32>(0.0));
+  let horoball = within > vec2<f32>(0.5);
+  trust = select(trust, min(trust, vec2<f32>(1.0 - lost)), horoball);
+  let faded = lost * (1.0 - max(within.x, within.y));
+  let trusted = min(min(trust.x, trust.y), 1.0 - faded);
   // Lines and dots keep their pixel size but are capped to a fraction of the
   // tile near the rim, and fade out once sub-pixel; otherwise they swamp it.
   // At an ideal V the tile narrows without bound, so lines are also capped to
@@ -197,7 +224,7 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   var col = mix(vec3<f32>(0.20, 0.35, 0.60), vec3<f32>(0.25, 0.45, 0.70), tone);
   if (u.ell.x != 0u) {
     let value = mix(0.62, 0.72, tone);
-    col = tile_color(select(acc[2], u.color_frame[2].xyz, central && trust.x < 0.5), value);  // φ(g) e_c
+    col = tile_color(select(acc[2], u.color_frame[2].xyz, horoball.x && trust.x < 0.5), value);  // φ(g) e_c
     if (u.mirrors[2].w > 0.0) {
       // A box filter over the `span` tiles the pixel covers, centred on its
       // own: the m-th neighbours each side weigh saturate((span - 2m + 1)/2),
@@ -226,7 +253,7 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   let edge_sample = (1.0 - smoothstep(w - 0.5*px, w + 0.5*px, d_edge)) * saturate(2.0*w/px);
   let w_v = min(min(0.5 * u.style.x * px, 0.08 * u.vert.w), 0.1 * h_v);
   let edge_mean = select(0.0, saturate(w_v / h_v), h_v > 0.0);
-  let edge_cov = mix(edge_mean, edge_sample, fan * trust.y) * trust.x;
+  let edge_cov = mix(edge_mean, edge_sample, fan * trust.y) * trust.x * (1.0 - faded);
   col = mix(col, vec3<f32>(1.0), edge_cov);
   // Below a pixel, a line's coverage scales with its width, a dot's with its area.
   let dot_cov = (1.0 - smoothstep(r - 0.5*px, r + 0.5*px, d_vert)) * pow(saturate(2.0*r/px), 2.0)
@@ -234,6 +261,6 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   col = mix(col, vec3<f32>(1.0, 0.8, 0.2), dot_cov);
   // Fade at the rim: f32 gives out at the hyperbolic one, and the sphere's
   // horizon would otherwise be a hard edge.
-  col = mix(col, bg, smoothstep(0.98, 0.999, rim));
+  col = mix(col, bg, max(smoothstep(0.98, 0.999, rim), faded));
   return vec4<f32>(col, 1.0);
 }

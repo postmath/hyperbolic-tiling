@@ -222,7 +222,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §17.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §18.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -721,7 +721,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§16) that is acceptable.
+thousand ALU operations per pixel (§17) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -949,7 +949,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §17.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §18.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1220,7 +1220,8 @@ fold, which would be a second copy of the shader to keep in step.
 
 The lines, dots and shades can fade, but every pixel needs a tile colour.
 For an ideal O, pixels whose cusp width is below its value at E lie in the
-central apeirogon. `deep_in_an_ideal_center_is_the_central_apeirogon`
+central apeirogon. `deep_in_an_ideal_center_is_the_central_apeirogon` (later
+`deep_in_an_ideal_corner_are_its_tiles`)
 checks this: their fold reflects only in lines through O. So such pixels
 take the central apeirogon's colour, `color_frame` applied to $e_c$, whatever
 the fold found. Lost pixels elsewhere keep whatever colour the fold found.
@@ -1349,7 +1350,70 @@ disjoint sides, and tiles reaching the rim.
 
 ---
 
-## 16. Precision and performance notes
+## 16. Milestone 16: what f32 cannot resolve elsewhere
+
+Commit: *Fade what f32 cannot resolve outside the cusps too.* The
+mathematics is in math §11.2.
+
+### 16.1 The report
+
+With {∞, iπ/0.962} at λ = 2.5, in a wide window, panning into the
+apeirogon left other tiles visible along the rim, with clean lines in some
+places and specks in others. Those tiles are outside every cusp's horoball,
+so milestone 13's per-pixel test, which is about the place within a cusp's
+strip, did not apply to them. The view's $M^{-1}$ is large there, and these
+pixels are far from D, so the fold applies an isometry of large norm and
+magnifies their rounding.
+
+### 16.2 A general estimate, calibrated twice
+
+The fold's isometry has norm about $|t|/|t_{\text{folded}}|$, so the error
+is about that times $\varepsilon\|M^{-1}\||p|$. Three attempts:
+
+1. With $|t|$ alone, calibrated by wrong line decisions: lines seemed to fail
+   below a ratio of 6. Fading there removed correct rim tiles at shallow
+   depths, because a decision flips for tiny shifts at a line's edge.
+2. Calibrated by the folded point's actual error against an f64 fold
+   instead: no pixel was off by a pixel while the estimate was under 2 px.
+   That worked until panning a hyperideal tiling turned the screen black. The
+   view was deep in a funnel, where nothing needs folding, but $|t|$ alone
+   still predicted large errors. That pan also exposed the unbounded funnel
+   itself, fixed in milestone 15.
+3. With the ratio of magnitudes, 30 wrongly folded pixels came out with
+   tiny estimates. An f32 fold that is lost runs off to about $10^{15}$ on the
+   lower sheet, so its result looks huge, and the ratio small. Such points
+   (x₀ < 0, or larger than t before the fold) now use $|t|$. After that, no
+   pixel in about 690,000, across cusps, fans and funnels, was off by a pixel
+   while the estimate was under 4 px. `lost` rises from 1 to 4.
+
+### 16.3 What a lost pixel shows
+
+* **Outside the horoballs** it fades to the background, as the rim fade
+  always did where f32 gives out.
+* **Inside a cusp's horoball** the tile is known: the central apeirogon at
+  an ideal O, or the fan at an ideal V. Its colour holds, as it does where the
+  cusp's own trust is low. `deep_in_an_ideal_corner_are_its_tiles`
+  generalizes milestone 13's test to an ideal V.
+* **Between the two** the hard switch drew a jagged edge, so it is blended
+  over the last pixel of the horoball. For a null covector the gradient of h
+  has length h, so h changes by about h·px per pixel. The horoball's level,
+  the cusp width at E, now rides in `mirrors[j].w`, which before was a 0/1
+  flag.
+
+### 16.4 Debugging on the GPU
+
+The emulation and the GPU disagreed about which pixels were in the
+horoball. A throwaway debug build wrote intermediate values as colours,
+`(faded, within, lost)` and then `(h, level, depth)`, and screenshots read
+them back. That showed the level was right but h was not small: the drags
+had gone into a funnel, not a cusp. One trap: the first debug build shared
+the regular build's target directory, so the regular binary was then
+silently the debug one, and the next screenshots showed debug colours. A
+debug build needs a target directory of its own.
+
+---
+
+## 17. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -1367,9 +1431,9 @@ disjoint sides, and tiles reaching the rim.
 
 ---
 
-## 17. Workflow notes
+## 18. Workflow notes
 
-### 17.1 jj
+### 18.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -1388,13 +1452,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 17.2 Checks before each commit
+### 18.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 17.3 A throwaway verification build
+### 18.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -1404,7 +1468,7 @@ snapshot into a commit.
 
 ---
 
-## 18. Exercises and extensions
+## 19. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.

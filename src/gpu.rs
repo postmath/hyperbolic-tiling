@@ -13,7 +13,8 @@ use crate::{geom::ORIGIN, tiling::Tiling, ui::Settings, view::View};
 pub struct Uniforms {
     /// Columns, each padded to vec4.
     pub m_inv: [[f32; 4]; 3],
-    /// xyz = covector, w = 1 if parallel to OV.
+    /// xyz = covector, w = for a mirror parallel to OV the cusp width at E,
+    /// else 0.
     pub mirrors: [[f32; 4]; 3],
     /// xyz = V, w = `Tiling::size`.
     pub vert: [f32; 4],
@@ -41,9 +42,11 @@ impl Uniforms {
             m_inv: [v4(m_inv.x_axis), v4(m_inv.y_axis), v4(m_inv.z_axis)],
             mirrors: std::array::from_fn(|k| {
                 let parallel = tiling.cusps().any(|j| j == k);
-                (tiling.mirrors[k].as_vec3())
-                    .extend(parallel as u32 as f32)
-                    .to_array()
+                let level = match g.meet(tiling.mirrors[1], tiling.mirrors[2]) {
+                    Some(e) if parallel => tiling.cusp_width(k, e) as f32,
+                    _ => 0.0,
+                };
+                (tiling.mirrors[k].as_vec3()).extend(level).to_array()
             }),
             // Any finite point will do for an ideal V, which gets no dots.
             vert: (tiling.vert.unwrap_or(ORIGIN).as_vec3())
