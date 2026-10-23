@@ -22,6 +22,7 @@ src/tiling.rs    a {p,q} tiling: mirrors, vertex V, the CPU fold
 src/view.rs      the view matrix M, pan/rotate, settling (rebasing)
 src/quotient.rs  finite quotient mod ℓ for stable tile colors
 src/ui.rs        the egui control panel and the {p,q} lattice picker
+src/snapshot.rs  the exact view state as a line of text, printed and loaded
 index.html       the page trunk builds for the web version (§8)
 ```
 
@@ -222,7 +223,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §18.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §19.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -721,7 +722,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§17) that is acceptable.
+thousand ALU operations per pixel (§18) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -949,7 +950,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §18.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §19.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1413,7 +1414,42 @@ debug build needs a target directory of its own.
 
 ---
 
-## 17. Precision and performance notes
+## 17. Milestone 17: the view as a line of text
+
+Commit: *Print and load the exact view state for debugging.*
+
+To report a strange picture exactly, V prints the whole state as one line:
+on native to stdout, on the web to the console, together with the page's
+address carrying it as a `#view=` fragment. `--view <line>` on native, or
+that fragment, loads it again.
+
+* **What goes in.** M alone does not fix the picture. It also depends on p,
+  q, ℓ, μ, the window size (which sets the disk radius), the line width,
+  vertex size and colour toggle, and the colour frame. `snapshot::Snapshot`
+  holds all of these, and the panel's visibility is left out.
+* **Exactness.** Rust prints floats in the shortest form that parses back to
+  the same value, so M round-trips bit for bit. M's entries use an exponent,
+  since they range from about $10^{-17}$ to $10^3$. A loaded view is used as
+  printed, without settling. The test `round_trips_exactly` checks this for a
+  panned view in each kind of tiling.
+* **Characters.** The line uses only letters, digits, `,`, `=`, `:`, `.`,
+  `-` and `x`, so it needs no quoting in a shell and no escaping in a URL. p
+  and q are written `7`, `inf` or `h3`.
+* **The window.** On native the window opens at the printed size. In the
+  browser the page sizes the canvas, so a different window changes the disk
+  radius.
+* **D** toggles a debug section in the panel: M rounded, max|M⁻¹| and the
+  cusp widths at the view centre, against the pan limits of §12.3 and §15.
+  The panel gets this as text, so `ui` still never sees `View`.
+
+Check: a view printed with V, then loaded with `--view`, matched the
+original screenshot in every pixel outside the panel. In headless Chrome,
+the `#view=` URL showed the same view, and a malformed fragment logged an
+error and fell back to {7,3}.
+
+---
+
+## 18. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -1431,9 +1467,9 @@ debug build needs a target directory of its own.
 
 ---
 
-## 18. Workflow notes
+## 19. Workflow notes
 
-### 18.1 jj
+### 19.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -1452,13 +1488,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 18.2 Checks before each commit
+### 19.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 18.3 A throwaway verification build
+### 19.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -1468,7 +1504,7 @@ snapshot into a commit.
 
 ---
 
-## 19. Exercises and extensions
+## 20. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.

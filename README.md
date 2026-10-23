@@ -60,6 +60,13 @@ Mouse and keyboard:
 | C | toggle quotient colors / two-tone triangles |
 | R | reset the view |
 | H | hide / show the panel |
+| D | show / hide debug information: the view matrix M and the pan limits |
+| V | print the exact view as one line, to stdout or the browser console |
+
+To reproduce a printed view, pass the line to `--view`, as in
+`cargo run --release -- --view v1,p=7,q=3,...`, or append it to the page's
+address as `#view=v1,p=7,q=3,...`. The browser console prints that address
+too.
 
 p and q range over 3..=32 and ∞: an infinite q gives ideal polygons, like the
 Farey tessellation {3,∞}, and an infinite p gives apeirogons. Beyond ∞ come

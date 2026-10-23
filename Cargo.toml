@@ -19,7 +19,10 @@ pollster = "=1.0.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "=0.1.7"
+wasm-bindgen = "=0.2.129"
 wasm-bindgen-futures = "=0.4.79"
+# The #view= fragment, and the console for printing the view.
+web-sys = { version = "=0.3.106", features = ["Window", "Location", "console"] }
 # WebGL2 as a fallback where the browser lacks WebGPU.
 wgpu = { version = "=30.0.1", features = ["webgl"] }
 

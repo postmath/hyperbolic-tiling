@@ -16,12 +16,12 @@ const ROTATE_RHO_MIN: f64 = 0.02;
 /// The narrowest `Tiling::cusp_width` at the view center that pans may reach.
 /// The shader's f32 loses about ε/width² of the width, 0.7% here, and the
 /// triangles at the center are already narrower than a pixel.
-const MIN_CUSP_WIDTH: f64 = 3e-3;
+pub const MIN_CUSP_WIDTH: f64 = 3e-3;
 /// The largest entry of M⁻¹ that pans may reach. Only a funnel of D, where a
 /// hyperideal corner leaves D open to the circle at infinity, gets there;
 /// cusps stop at MIN_CUSP_WIDTH first. Unbounded, M would eventually
 /// overflow even in f64.
-const MAX_VIEW_NORM: f64 = 1e3;
+pub const MAX_VIEW_NORM: f64 = 1e3;
 
 #[derive(Clone, Copy)]
 pub struct View {

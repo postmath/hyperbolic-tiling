@@ -17,7 +17,8 @@ const USAGE: &str = "\
 Drag: pan. Right drag or Shift+drag: rotate. R: reset view.
 P / Shift+P: step p up / down. Q / Shift+Q: step q.
 L / Shift+L: step the prime ℓ for tile colors. C: toggle tile colors / two-tone.
-H: hide / show the control panel.";
+H: hide / show the control panel. D: show / hide debug info.
+V: print the exact view as a line, to load with --view or #view=.";
 
 const LATTICE_PX: f32 = 280.0;
 
@@ -30,6 +31,8 @@ pub struct Settings {
     /// The projection, see `Geometry::disk_to_point`.
     pub mu: f64,
     pub show_panel: bool,
+    /// Show the view's state in the panel.
+    pub debug: bool,
 }
 
 impl Default for Settings {
@@ -40,6 +43,7 @@ impl Default for Settings {
             vertex_px: 3.5,
             mu: 0.5,
             show_panel: true,
+            debug: false,
         }
     }
 }
@@ -47,6 +51,7 @@ impl Default for Settings {
 pub enum Action {
     SetTiling(Tiling),
     ResetView,
+    PrintView,
 }
 
 pub struct Output {
@@ -93,6 +98,7 @@ impl Gui {
         settings: &mut Settings,
         tiling: &Tiling,
         colors: Option<usize>,
+        debug: Option<&str>,
     ) -> Output {
         let input = self.state.take_egui_input(window);
         let mut action = None;
@@ -109,7 +115,7 @@ impl Gui {
                     .resizable(false)
                     .show(ctx, |ui| {
                         // A discarded pass is redone without input; keep its action.
-                        action = panel(ui, settings, tiling, colors).or(action.take());
+                        action = panel(ui, settings, tiling, colors, debug).or(action.take());
                     });
             }
         });
@@ -133,6 +139,7 @@ fn panel(
     settings: &mut Settings,
     tiling: &Tiling,
     colors: Option<usize>,
+    debug: Option<&str>,
 ) -> Option<Action> {
     ui.set_width(LATTICE_PX);
     let mut action = None;
@@ -181,6 +188,13 @@ fn panel(
     ui.add(Slider::new(&mut settings.vertex_px, 0.0..=10.0).text("Vertex size"));
     if ui.button("Reset view").clicked() {
         action = Some(Action::ResetView);
+    }
+    if let Some(text) = debug {
+        ui.separator();
+        ui.label(egui::RichText::new(text).monospace().small());
+        if ui.button("Print view").clicked() {
+            action = Some(Action::PrintView);
+        }
     }
     ui.collapsing("Help", |ui| ui.label(USAGE));
     action

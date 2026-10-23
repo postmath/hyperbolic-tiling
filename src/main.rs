@@ -1,6 +1,7 @@
 mod geom;
 mod gpu;
 mod quotient;
+mod snapshot;
 mod tiling;
 mod ui;
 mod view;
@@ -18,6 +19,7 @@ use winit::{
 };
 
 use gpu::{Renderer, Uniforms};
+use snapshot::Snapshot;
 use tiling::Tiling;
 use ui::{Action, Gui, Settings};
 use view::View;
@@ -78,13 +80,14 @@ struct Model {
 }
 
 impl Model {
-    fn new() -> Self {
-        let tiling = Tiling::new(7, 3).unwrap();
+    fn new(snapshot: Option<&Snapshot>) -> Self {
+        let tiling = snapshot.map_or_else(|| Tiling::new(7, 3).unwrap(), |s| s.tiling);
         Self {
-            settings: Settings::default(),
+            settings: snapshot.map_or_else(Settings::default, |s| s.settings(Settings::default())),
             tiling,
             colors: tiling.quotient.orbit_size(),
-            view: View::new(tiling.geometry),
+            // As printed, without settling, so that it stays exactly the same.
+            view: snapshot.map_or_else(|| View::new(tiling.geometry), |s| s.view),
             cursor: None,
             modifiers: ModifiersState::empty(),
             drag: None,
@@ -113,10 +116,26 @@ impl Model {
         window.set_title(&self.title());
     }
 
+    fn print_view(&self, window: &Window) {
+        let size = window.inner_size();
+        let snapshot = Snapshot::new(
+            &self.tiling,
+            &self.view,
+            &self.settings,
+            [size.width, size.height],
+        );
+        emit(&snapshot.to_string());
+    }
+
     fn paint(&mut self, gfx: &mut Ready) {
-        let out = gfx
-            .gui
-            .run(&gfx.window, &mut self.settings, &self.tiling, self.colors);
+        let debug = (self.settings.debug).then(|| snapshot::describe(&self.tiling, &self.view));
+        let out = gfx.gui.run(
+            &gfx.window,
+            &mut self.settings,
+            &self.tiling,
+            self.colors,
+            debug.as_deref(),
+        );
         // The panel was laid out before any action; redraw to show it.
         let repaint_after = match out.action {
             Some(Action::SetTiling(t)) => {
@@ -126,6 +145,10 @@ impl Model {
             Some(Action::ResetView) => {
                 self.view = View::new(self.tiling.geometry);
                 Duration::ZERO
+            }
+            Some(Action::PrintView) => {
+                self.print_view(&gfx.window);
+                out.repaint_after
             }
             None => out.repaint_after,
         };
@@ -157,6 +180,8 @@ impl Model {
             }
             KeyCode::KeyC => self.settings.quotient_colors ^= true,
             KeyCode::KeyH => self.settings.show_panel ^= true,
+            KeyCode::KeyD => self.settings.debug ^= true,
+            KeyCode::KeyV => self.print_view(window),
             KeyCode::KeyR => self.view = View::new(self.tiling.geometry),
             _ => return,
         }
@@ -238,6 +263,8 @@ struct App {
     proxy: EventLoopProxy<Renderer>,
     gfx: Gfx,
     model: Model,
+    /// The window size of a loaded view, for the native window.
+    size: Option<[u32; 2]>,
 }
 
 impl ApplicationHandler<Renderer> for App {
@@ -245,7 +272,10 @@ impl ApplicationHandler<Renderer> for App {
         if !matches!(self.gfx, Gfx::None) {
             return;
         }
-        let attrs = Window::default_attributes().with_title(self.model.title());
+        let mut attrs = Window::default_attributes().with_title(self.model.title());
+        if let Some([w, h]) = self.size {
+            attrs = attrs.with_inner_size(winit::dpi::PhysicalSize::new(w, h));
+        }
         #[cfg(target_arch = "wasm32")]
         let attrs = winit::platform::web::WindowAttributesExtWebSys::with_append(attrs, true);
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
@@ -304,16 +334,69 @@ impl ApplicationHandler<Renderer> for App {
     }
 }
 
+/// The line given with `--view` (native) or as a `#view=` URL fragment (web).
+fn view_line() -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut args = std::env::args().skip_while(|a| a != "--view");
+        args.next()?;
+        args.next()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let hash = web_sys::window()?.location().hash().ok()?;
+        hash.strip_prefix("#view=").map(str::to_owned)
+    }
+}
+
+/// Prints a line to stdout, or in the browser to the console, there with
+/// the page's address for the view as well.
+fn emit(line: &str) {
+    #[cfg(not(target_arch = "wasm32"))]
+    println!("{line}");
+    #[cfg(target_arch = "wasm32")]
+    {
+        let href = web_sys::window().and_then(|w| w.location().href().ok());
+        let page = href
+            .as_deref()
+            .map_or("", |h| h.split('#').next().unwrap_or(h));
+        let text = format!("{line}\n{page}#view={line}");
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&text));
+    }
+}
+
 fn main() {
     #[cfg(target_arch = "wasm32")]
     console_error_panic_hook::set_once();
+    let snapshot = view_line().map(|line| Snapshot::parse(&line));
+    let snapshot = match snapshot {
+        Some(Err(e)) => {
+            let message = format!("bad view line: {e}");
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                eprintln!("{message}");
+                std::process::exit(2);
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&message));
+                None
+            }
+        }
+        s => s.map(Result::unwrap),
+    };
     let event_loop = EventLoop::with_user_event()
         .build()
         .expect("create event loop");
     let app = App {
         proxy: event_loop.create_proxy(),
         gfx: Gfx::None,
-        model: Model::new(),
+        model: Model::new(snapshot.as_ref()),
+        // The browser sizes the canvas itself.
+        size: snapshot
+            .as_ref()
+            .map(|s| s.size)
+            .filter(|_| cfg!(not(target_arch = "wasm32"))),
     };
     #[cfg(not(target_arch = "wasm32"))]
     {
