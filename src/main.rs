@@ -92,7 +92,7 @@ struct Model {
     view: View,
     cursor: Option<PhysicalPosition<f64>>,
     modifiers: ModifiersState,
-    drag: Option<Drag>,
+    drag: Option<(MouseButton, Drag)>,
     /// When egui next wants a frame.
     repaint_at: Option<Instant>,
 }
@@ -217,6 +217,22 @@ impl Model {
         window.request_redraw();
     }
 
+    /// Starts the drag that `button` makes with the current modifiers, or
+    /// switches an ongoing one to it.
+    fn grab(&mut self, button: MouseButton, gfx: &Ready) {
+        let proj = self.projection();
+        let drag = match button {
+            MouseButton::Left if self.modifiers.shift_key() => Drag::Secondary,
+            MouseButton::Left => Drag::Pan,
+            MouseButton::Right => Drag::Secondary,
+            _ => return,
+        };
+        let held = self
+            .cursor
+            .is_some_and(|c| self.view.pannable(gfx.to_screen(c, proj.chart), proj));
+        self.drag = (held || !drag.holds(proj.chart)).then_some((button, drag));
+    }
+
     fn window_event(&mut self, gfx: &mut Ready, event: WindowEvent) {
         // Not for egui, which would ask to repaint after every frame.
         if event == WindowEvent::RedrawRequested {
@@ -232,7 +248,12 @@ impl Model {
                 gfx.renderer.resize(size.width, size.height);
                 gfx.window.request_redraw();
             }
-            WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
+            WindowEvent::ModifiersChanged(m) => {
+                self.modifiers = m.state();
+                if let Some((button, _)) = self.drag {
+                    self.grab(button, gfx);
+                }
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -246,23 +267,9 @@ impl Model {
                 state: ElementState::Released,
                 ..
             } => self.drag = None,
-            WindowEvent::MouseInput { button, .. } if !egui.consumed => {
-                let proj = self.projection();
-                let drag = match button {
-                    MouseButton::Left if self.modifiers.shift_key() => Some(Drag::Secondary),
-                    MouseButton::Left => Some(Drag::Pan),
-                    MouseButton::Right => Some(Drag::Secondary),
-                    _ => None,
-                };
-                let held = self
-                    .cursor
-                    .is_some_and(|c| self.view.pannable(gfx.to_screen(c, proj.chart), proj));
-                if let Some(drag) = drag.filter(|d| held || !d.holds(proj.chart)) {
-                    self.drag = Some(drag);
-                }
-            }
+            WindowEvent::MouseInput { button, .. } if !egui.consumed => self.grab(button, gfx),
             WindowEvent::CursorMoved { position, .. } => {
-                if let (Some(drag), Some(old)) = (self.drag, self.cursor) {
+                if let (Some((_, drag)), Some(old)) = (self.drag, self.cursor) {
                     let proj = self.projection();
                     let [from, to] = [old, position].map(|p| gfx.to_screen(p, proj.chart));
                     let before = self.view;
