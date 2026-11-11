@@ -4,14 +4,19 @@ An interactive viewer for regular tilings $\{p,q\}$, written in Rust with
 wgpu and winit. Hyperbolic tilings are shown in the Poincaré disk, Euclidean
 ones as a plane to pan over, and spherical ones (the Platonic solids) by
 stereographic projection of the sphere. The projection point can be moved,
-from the Klein and gnomonic projections to the Gans and orthographic ones.
-A 3D view shows the hyperboloid, plane or sphere itself.
+from the Klein and gnomonic projections to the Gans and orthographic ones,
+and the half-plane and band charts are there too. A 3D view shows the
+surface itself: the hyperboloid, the plane or the sphere, and can show how
+the disk projects it.
+
+**Try it in the browser: <https://postmath.github.io/hyperbolic-tiling/>**
 
 The whole picture is drawn by one fragment shader. Each pixel is mapped onto
 the hyperboloid, plane or sphere, through a chart or along a camera ray, and
-reflected back into the fundamental triangle of the $(2,p,q)$ triangle group. All state and the precision-sensitive math stay on
-the CPU in f64. Tiles are colored through a finite quotient of the triangle
-group mod a prime ℓ, so every tile keeps the same color however far you pan.
+reflected back into the fundamental triangle of the $(2,p,q)$ triangle
+group. All state and the precision-sensitive math stay on the CPU in f64.
+Tiles are colored through a finite quotient of the triangle group mod a
+prime ℓ, so every tile keeps the same color however far you pan.
 
 ## Running
 
@@ -31,10 +36,11 @@ trunk serve --open
 ```
 
 `trunk build --release` writes a static site to `dist/`, about 2.6 MB
-gzipped, which any static file host can serve. It uses WebGPU where the
-browser provides it and falls back to WebGL2 otherwise. Tested in Chrome on
-both paths. The page's icons in `icons/` are committed; `scripts/favicons.sh`
-renders them again.
+gzipped, which any static file host can serve; pushes to `main` deploy it
+to the demo above through GitHub Pages. It uses WebGPU where the browser
+provides it and falls back to WebGL2 otherwise. The charts were tested in
+Chrome on both paths, the 3D view on WebGL2 only. The page's icons in
+`icons/` are committed; `scripts/favicons.sh` renders them again.
 
 ## Controls
 
@@ -48,13 +54,15 @@ A panel at the top left holds the main controls:
   space; each alone, or with the other in an inset at the bottom right.
   Four small pictures of these layouts pick one. The inset takes its own
   view's drags, and its buttons swap it with the main view or hide it.
-* **3D view settings:** the hyperboloid and the plane fade out between
-  distances 3 and 3.5 from the centre, so that they do not seem to end. The
-  **field of view** runs from orthographic, 0, to 120°; changing it keeps the
-  size of the picture at the camera's target. **Show the projection** draws how the disk projects the
-  surface: the disk on the plane tangent at the centre, the point
+* **3D view settings:** **Show the projection** draws how the disk projects
+  the surface: the disk on the plane tangent at the centre, the point
   (-λ, 0, 0) projected from, and the line through the point under the
-  pointer to its image.
+  pointer to its image. It needs the disk chart and a curved surface. The
+  **field of view** runs from orthographic, 0, to 120°; changing it keeps
+  the size of the picture at the camera's target. The hyperboloid and the
+  plane fade out between distances 3 and 3.5 from the centre, so that they
+  do not seem to end. The hyperboloid is seen from below, the side the
+  projection sees, which is in full colour; its inside is dimmed.
 * **Chart:** the disk, the upper half-plane, or the band (Mercator on the
   sphere). The other two are tied to the disk: the half-plane's ∞ is the top
   of the disk's rim, and the band's axis is its horizontal diameter. They
@@ -95,8 +103,8 @@ at the line's size and without the panel, and opens no window.
 p and q range over 3..=32 and ∞: an infinite q gives ideal polygons, like the
 Farey tessellation {3,∞}, and an infinite p gives apeirogons. Beyond ∞ come
 Coxeter's hyperideal labels iπ/δ, for 2cosh δ = 3..=10: tiles whose sides
-never meet, or pseudogons with vertices on a hypercycle. The window title shows the current tiling, ℓ, and
-the number of colors.
+never meet, or pseudogons with vertices on a hypercycle. The window title
+shows the current tiling, ℓ, and the number of colors.
 
 ## Tests
 
@@ -105,19 +113,21 @@ cargo test
 ```
 
 Tests run without a GPU. They validate the WGSL and check its uniform layout
-against the Rust struct. A CPU replica of the shader's fold is used to check
-convergence at the rim, the pan and rotate math, view rebasing, and the
-coloring.
+against the Rust struct. CPU replicas of the shader's fold and of its ray
+casting check convergence at the rim, the pan and rotate math, view
+rebasing, the coloring, the camera's motions and framing, and the
+projection's geometry.
 
 ## Documentation
 
 * [doc/math-guide.md](doc/math-guide.md) covers the mathematics from linear
   algebra up: the hyperboloid model, isometries, triangle groups and folding,
-  holonomy, the finite quotients behind the colors, and the one model that
-  covers all three curvatures, and the half-plane and band charts.
+  holonomy, the finite quotients behind the colors, the one model that
+  covers all three curvatures, the half-plane and band charts, and the
+  surface in 3D: ray casting, the camera, and the projection shown.
 * [doc/implementation-guide.md](doc/implementation-guide.md) walks through
   the code one milestone (commit) at a time: wgpu and winit setup, the
-  shader, input handling, precision, and testing.
+  shader, input handling, precision, the 3D view, and testing.
 
 ## License
 
