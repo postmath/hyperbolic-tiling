@@ -46,7 +46,8 @@ A panel at the top left holds the main controls:
   resulting color count.
 * **3D view:** the surface itself, embedded in space, instead of a chart.
   The hyperboloid and the plane are cut off at the **extent**, a distance
-  from the centre.
+  from the centre. The **field of view** runs from orthographic, 0, to 120°;
+  changing it keeps the size of the picture at the camera's target.
 * **Chart:** the disk, the upper half-plane, or the band (Mercator on the
   sphere). The other two are tied to the disk: the half-plane's ∞ is the top
   of the disk's rim, and the band's axis is its horizontal diameter. They
@@ -55,7 +56,7 @@ A panel at the top left holds the main controls:
   projection point λ in between; type a value into its number field for an
   exact one.
 * **Sliders** for line width and vertex size.
-* **Reset view.**
+* **Reset tiling**, and in 3D **Reset camera**.
 
 Mouse and keyboard:
 
@@ -63,11 +64,17 @@ Mouse and keyboard:
 |---|---|
 | left drag | pan; the grabbed point stays under the cursor, and leaving the hyperbolic picture ends the drag |
 | right drag, or Shift+left drag | rotate the disk about the window centre; scale the half-plane about a point on its boundary, keeping ∞ fixed and the grabbed point under the cursor; slide the band along its axis |
+| left drag in 3D | orbit the camera about its target: across for the azimuth, up and down for the elevation |
+| right drag, or Shift+left drag, in 3D | move the target across the screen |
+| wheel in 3D | dolly the camera toward or away from the target |
+| Ctrl+wheel or pinch in 3D | zoom: change the field of view, keeping the camera in place |
+| double click in 3D | make the point of the surface under the pointer the target |
 | P / Shift+P | step p up / down |
 | Q / Shift+Q | step q up / down |
 | L / Shift+L | step the color prime ℓ up / down |
 | C | toggle quotient colors / two-tone triangles |
-| R | reset the view |
+| R | reset the tiling's position |
+| Shift+R | reset the 3D view's camera |
 | H | hide / show the panel |
 | D | show / hide debug information: the view matrix M and the pan limits |
 | V | print the exact view as one line, to stdout or the browser console |

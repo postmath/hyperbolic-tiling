@@ -1417,7 +1417,33 @@ is $|(c\cdot p_x,\ c\cdot p_y)|$. That is the pixel size across that line, and
 the edge VE and the vertex dot each use their own. Lines then keep their
 width in pixels in every direction, as in the charts.
 
-### 14.5 In the code
+### 14.5 Moving the camera
+
+The camera has five degrees of freedom, those of a camera that does not
+roll: the target $T$, the azimuth and elevation, and the half height $h$.
+The field of view $\phi$ is a sixth, a property of the lens. The mouse
+reaches all of them.
+
+* **Orbit** changes the azimuth and the elevation, with $T$ fixed. The
+  elevation stops at $\pm89°$, where the frame would lose its azimuth.
+* **Pan** moves $T$ by $-h\,(\Delta d_1R+\Delta d_2U)$ for a pointer that moves
+  $\Delta d$ in screen units. What lies at the target's depth then follows
+  the pointer.
+* **Dolly** scales $h$. The eye is at distance $h/\tan(\phi/2)$ from $T$, so
+  it moves along its line to the target, and nearer things grow faster than
+  farther ones.
+* **Zoom** scales $\tan(\phi/2)$ and $h$ by the same factor. The eye stays
+  where it is, and the picture is magnified uniformly. Orthographic, it has
+  no field of view to change, and scales $h$ like a dolly.
+* **The field of view** in the panel changes $\phi$ with $h$ fixed. The
+  picture at the target keeps its size while the eye moves: a dolly zoom.
+  At $\phi=0$ the eye has gone to infinity, which is the orthographic
+  camera. So that end of the slider is continuous with the rest.
+
+Parametrizing by $h$ rather than by the eye's distance is what makes the
+orthographic camera a limit rather than a special case.
+
+### 14.6 In the code
 
 * `camera::Camera` holds $T$, the azimuth and elevation of $B$, and $h$. The
   field of view and the extent are settings, like λ.
@@ -1429,7 +1455,10 @@ width in pixels in every direction, as in the charts.
 * Tests: the camera frame is orthonormal and level, and from straight
   above shows the disk's way up; rays through the centre hit a target on the
   surface; hits are on the surface, shown, and on the sphere's near side;
-  and a ray over the cut rim finds the far wall.
+  a ray over the cut rim finds the far wall; `project` inverts `ray`; a pan
+  holds the target's plane; an orbit keeps the target and stops at the
+  elevation's bounds; a dolly moves the eye along its line and a zoom keeps
+  it.
 
 **Exercises.**
 1. Show that a perspective camera with its eye at $(-\lambda,0,0)$, looking

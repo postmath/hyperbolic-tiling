@@ -1672,6 +1672,73 @@ the machine.
 
 ---
 
+## 22. Milestone 22: moving the camera
+
+Commit: *Orbit, pan, dolly and zoom the 3D view's camera.* The mathematics is
+in math §14.5.
+
+### 22.1 Mapping the mouse
+
+The 3D view takes the same buttons as the charts, with meanings that suit a
+camera:
+
+| input | chart | 3D view |
+|---|---|---|
+| left drag | pan the tiling | orbit about the target |
+| right or Shift drag | rotate, scale or slide | move the target |
+| wheel | — | dolly |
+| Ctrl+wheel, pinch | — | zoom |
+| double click | — | target the point under the pointer |
+
+`Drag::Pan` became `Drag::Primary`, and `Model::drag` dispatches on the
+chart, with none meaning 3D. A drag across half the pane's shorter side
+orbits by 90°, and dragging down raises the camera, as if the pointer pulled
+the near side of the scene down. A 3D drag does not need to start on the
+surface, so `grab` skips the pannable check there.
+
+Moving the tiling itself in 3D, by dragging on the surface, was left out
+for now. The 2D inset of §23 does that.
+
+### 22.2 Wheel and pinch
+
+`MouseWheel` comes as lines from a mouse and as pixels from a touchpad or
+the browser, about 100 per notch. Both become notches, and each notch scales
+by `WHEEL_NOTCH`, 0.85. Browsers turn a pinch into Ctrl+wheel, so Ctrl+wheel
+zooms. Native macOS sends a `PinchGesture` instead, which zooms directly.
+The field of view that zooming reaches is bounded to 1°–120°. Only the
+panel's slider reaches 0, orthographic, where both wheels dolly.
+
+### 22.3 Double click and resets
+
+winit reports presses, not clicks, so `Model::press` keeps the time and
+place of the last left press. A second press within 400 ms and 4 px casts the
+pointer's ray through `camera::hit` and makes the point found the target.
+The camera keeps its direction and half height, so the point jumps to the
+centre, and later orbits pivot about it.
+
+The panel's **Reset view** became **Reset tiling**, next to **Reset
+camera**, which is shown in 3D only. R resets the tiling as before, and
+Shift+R the camera. The camera reset keeps the field of view and the extent,
+like the tiling reset keeps λ.
+
+### 22.4 Checks
+
+Unit tests: those of math §14.6, and the field of view's text round trip.
+The controls were driven in headless Chrome through the DevTools protocol:
+a short Python script that speaks the WebSocket protocol over a plain
+socket, since the machine had no WebSocket module and no Xvfb, and sends
+`Input.dispatchMouseEvent` and `Input.dispatchKeyEvent`. V then printed
+the camera after each step. Two lessons:
+
+* A synthetic key with `modifiers: 8` is not Shift+R to winit. winit tracks
+  modifiers from the Shift key's own events, so the script must send a
+  Shift `rawKeyDown` first.
+* A double click that seemed to do nothing had landed below the bowl, on the
+  background, where nothing should happen. Checking the printed target
+  against $Q(x)=1$ told the cases apart.
+
+---
+
 ## 24. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially

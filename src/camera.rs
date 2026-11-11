@@ -5,6 +5,14 @@ use glam::{DVec2, DVec3};
 
 use crate::geom::{Geometry, ORIGIN};
 
+/// Elevations stop short of straight up and down, where the azimuth is lost.
+const MAX_ELEVATION: f64 = 89.0 * std::f64::consts::PI / 180.0;
+/// Bounds of `Camera::half_height`.
+const HALF_HEIGHTS: [f64; 2] = [1e-3, 1e3];
+/// Bounds of the field of view that zooming reaches, in degrees; the panel
+/// reaches 0, orthographic.
+pub const ZOOM_FOVS: [f64; 2] = [1.0, 120.0];
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
     /// The point the camera looks at and orbits.
@@ -83,6 +91,54 @@ impl Camera {
                 t_min: f64::NEG_INFINITY,
             },
         }
+    }
+
+    /// Turns the camera about the target, by `angles` = (Δazimuth,
+    /// Δelevation) in radians.
+    pub fn orbit(&mut self, angles: DVec2) {
+        self.azimuth = (self.azimuth + angles.x).rem_euclid(std::f64::consts::TAU);
+        self.elevation = (self.elevation + angles.y).clamp(-MAX_ELEVATION, MAX_ELEVATION);
+    }
+
+    /// Moves the target across the screen, so that what lies at its depth
+    /// follows the pointer from screen position `from` to `to`.
+    pub fn pan(&mut self, from: DVec2, to: DVec2) {
+        let [right, up, _] = self.basis();
+        let d = to - from;
+        self.target -= self.half_height * (d.x * right + d.y * up);
+    }
+
+    /// Moves the camera toward the target, scaling its distance and the
+    /// half height by `factor`.
+    pub fn dolly(&mut self, factor: f64) {
+        self.half_height = (self.half_height * factor).clamp(HALF_HEIGHTS[0], HALF_HEIGHTS[1]);
+    }
+
+    /// Narrows the field of view `fov`, in degrees, by `factor` in tan(fov/2),
+    /// keeping the eye where it is, within `ZOOM_FOVS`; orthographic, scales
+    /// the picture instead.
+    pub fn zoom(&mut self, factor: f64, fov: &mut f64) {
+        if *fov == 0.0 {
+            return self.dolly(factor);
+        }
+        let tan = |deg: f64| (0.5 * deg.to_radians()).tan();
+        let new =
+            (2.0 * (tan(*fov) * factor).atan().to_degrees()).clamp(ZOOM_FOVS[0], ZOOM_FOVS[1]);
+        self.half_height *= tan(new) / tan(*fov);
+        *fov = new;
+    }
+
+    /// Where `x` appears, as a screen position for `ray`.
+    #[cfg(test)]
+    pub fn project(&self, x: DVec3, fov: f64) -> DVec2 {
+        let [right, up, back] = self.basis();
+        let v = x - self.target;
+        // Along the line from the eye, back to the plane through the target.
+        let scale = match self.eye_offset(fov) {
+            Some(offset) => offset.length() / (offset.length() - v.dot(back)),
+            None => 1.0,
+        };
+        DVec2::new(v.dot(right), v.dot(up)) * scale / self.half_height
     }
 }
 
@@ -194,6 +250,70 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn project_inverts_ray() {
+        let g = Geometry::Hyperbolic;
+        let c = Camera::new(g, 3.0);
+        for fov in FOVS {
+            let d = DVec2::new(0.3, 0.2);
+            let x = hit(g, cap(g, 3.0), &c.ray(d, fov)).unwrap();
+            assert!((c.project(x, fov) - d).length() < 1e-9, "{fov}");
+        }
+    }
+
+    /// A pan keeps what lies at the target's depth under the pointer, and the
+    /// rest of the view as it was.
+    #[test]
+    fn pan_holds_the_target_plane() {
+        for fov in FOVS {
+            let mut c = Camera::new(Geometry::Hyperbolic, 3.0);
+            let (from, to) = (DVec2::new(0.2, 0.1), DVec2::new(-0.3, 0.5));
+            let grabbed = c.ray(from, fov).origin;
+            let before = c;
+            c.pan(from, to);
+            assert!((c.project(grabbed, fov) - to).length() < 1e-12);
+            assert_eq!(c.basis(), before.basis());
+            assert_eq!(c.half_height, before.half_height);
+        }
+    }
+
+    #[test]
+    fn orbit_keeps_the_target_and_clamps_the_elevation() {
+        let mut c = Camera::new(Geometry::Spherical, 3.0);
+        let target = c.target;
+        c.orbit(DVec2::new(10.0, 5.0));
+        assert_eq!(c.target, target);
+        assert_eq!(c.elevation, MAX_ELEVATION);
+        assert!((0.0..std::f64::consts::TAU).contains(&c.azimuth));
+        c.orbit(DVec2::new(0.0, -10.0));
+        assert_eq!(c.elevation, -MAX_ELEVATION);
+    }
+
+    /// A dolly moves the eye along its line to the target; a zoom keeps it
+    /// and changes only the field of view.
+    #[test]
+    fn dolly_moves_the_eye_and_zoom_keeps_it() {
+        let mut c = Camera::new(Geometry::Hyperbolic, 3.0);
+        let fov = 45f64;
+        let eye = |c: &Camera, fov: f64| c.target + c.eye_offset(fov.to_radians()).unwrap();
+        let before = eye(&c, fov);
+        c.dolly(0.5);
+        let after = eye(&c, fov);
+        assert!(((after - c.target) * 2.0 - (before - c.target)).length() < 1e-12);
+
+        let mut zoomed = fov;
+        c.zoom(0.5, &mut zoomed);
+        assert!(zoomed < fov);
+        assert!((eye(&c, zoomed) - after).length() < 1e-9);
+        c.zoom(1e-6, &mut zoomed);
+        assert_eq!(zoomed, ZOOM_FOVS[0]);
+        assert!((eye(&c, zoomed) - after).length() < 1e-9);
+
+        let (h, mut ortho) = (c.half_height, 0.0);
+        c.zoom(0.5, &mut ortho);
+        assert_eq!((ortho, c.half_height), (0.0, 0.5 * h));
     }
 
     /// Looking across the bowl, a ray through its rim misses the near wall

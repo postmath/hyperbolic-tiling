@@ -8,6 +8,7 @@ use egui::{
 use winit::{event::WindowEvent, raw_window_handle::HasDisplayHandle, window::Window};
 
 use crate::{
+    camera::ZOOM_FOVS,
     geom::{CONFORMAL_MU, Chart, Geometry, Projection},
     gpu::Overlay,
     tiling::{Count, MAX_LAMBDA, MAX_PQ, Tiling},
@@ -15,7 +16,10 @@ use crate::{
 
 const USAGE: &str = "\
 Drag: pan. Right drag or Shift+drag: rotate the disk, scale the half-plane
-about ∞, or slide the band along its axis. R: reset view.
+about ∞, or slide the band along its axis. R: reset the tiling's position.
+In 3D, drag: orbit. Right drag or Shift+drag: move the camera's target.
+Wheel: dolly. Ctrl+wheel or pinch: zoom. Double click: orbit about that
+point. Shift+R: reset the camera.
 P / Shift+P: step p up / down. Q / Shift+Q: step q.
 L / Shift+L: step the prime ℓ for tile colors. C: toggle tile colors / two-tone.
 H: hide / show the control panel. D: show / hide debug info.
@@ -72,7 +76,8 @@ impl Settings {
 
 pub enum Action {
     SetTiling(Tiling),
-    ResetView,
+    ResetTiling,
+    ResetCamera,
     PrintView,
 }
 
@@ -211,9 +216,14 @@ fn panel(
 
     ui.add(Slider::new(&mut settings.line_px, 0.0..=5.0).text("Line width"));
     ui.add(Slider::new(&mut settings.vertex_px, 0.0..=10.0).text("Vertex size"));
-    if ui.button("Reset view").clicked() {
-        action = Some(Action::ResetView);
-    }
+    ui.horizontal(|ui| {
+        if ui.button("Reset tiling").clicked() {
+            action = Some(Action::ResetTiling);
+        }
+        if settings.view_3d && ui.button("Reset camera").clicked() {
+            action = Some(Action::ResetCamera);
+        }
+    });
     if let Some(text) = debug {
         ui.separator();
         ui.label(egui::RichText::new(text).monospace().small());
@@ -237,6 +247,33 @@ fn space(ui: &mut Ui, settings: &mut Settings, g: Geometry) {
     } else {
         "For the 3D view."
     });
+    ui.add_enabled_ui(settings.view_3d, |ui| {
+        ui.add(
+            Slider::new(&mut settings.fov, 0.0..=ZOOM_FOVS[1])
+                .text("Field of view")
+                .custom_formatter(|fov, _| fov_text(fov))
+                .custom_parser(parse_fov),
+        );
+    })
+    .response
+    .on_disabled_hover_text("For the 3D view.");
+}
+
+/// Degrees, or "ortho" for 0.
+fn fov_text(fov: f64) -> String {
+    if fov == 0.0 {
+        "ortho".into()
+    } else {
+        format!("{fov:.0}°")
+    }
+}
+
+fn parse_fov(s: &str) -> Option<f64> {
+    let s = s.trim().trim_end_matches('°');
+    if s.starts_with("ortho") {
+        return Some(0.0);
+    }
+    s.parse().ok().filter(|f| (0.0..=ZOOM_FOVS[1]).contains(f))
 }
 
 /// Projection presets with their μ; see `Geometry::disk_to_point`.
@@ -549,6 +586,15 @@ mod tests {
         let top_right = lat.at((top, top));
         assert!((top_right.x - (LATTICE_PX - 6.0)).abs() < 1e-3);
         assert!((top_right.y - 6.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn fov_round_trips_through_text() {
+        for (fov, text) in [(0.0, "ortho"), (45.0, "45°"), (120.0, "120°")] {
+            assert_eq!(fov_text(fov), text);
+            assert_eq!(parse_fov(text), Some(fov));
+        }
+        assert_eq!(parse_fov("200"), None);
     }
 
     #[test]

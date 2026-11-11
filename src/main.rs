@@ -13,7 +13,7 @@ use glam::DVec2;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalPosition,
-    event::{ElementState, KeyEvent, MouseButton, WindowEvent},
+    event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::{KeyCode, ModifiersState, PhysicalKey},
     window::{Window, WindowId},
@@ -31,12 +31,20 @@ use web_time::Instant;
 
 /// Gap between the edge of the picture and the window edge, px.
 const MARGIN_PX: f32 = 8.0;
+/// The 3D view's orbit per screen unit, half the pane's shorter side.
+const ORBIT_PER_UNIT: f64 = std::f64::consts::FRAC_PI_2;
+/// The factor by which one wheel notch, or 100 px of scrolling, dollies or
+/// zooms the 3D view.
+const WHEEL_NOTCH: f64 = 0.85;
+/// Two presses at most this far apart in time and px make a double click.
+const DOUBLE_CLICK: (Duration, f64) = (Duration::from_millis(400), 4.0);
 
 #[derive(Clone, Copy, PartialEq)]
 enum Drag {
-    Pan,
-    /// Right or Shift drag: rotate the disk, scale the half-plane about ∞, or
-    /// slide the band along its axis.
+    /// Left drag: pan the chart, or orbit the 3D view's camera.
+    Primary,
+    /// Right or Shift drag: rotate the disk, scale the half-plane about ∞,
+    /// slide the band along its axis, or move the camera's target.
     Secondary,
 }
 
@@ -44,7 +52,7 @@ impl Drag {
     /// Whether the drag keeps the grabbed point under the cursor, so needs a
     /// point it can hold, see `View::pannable`.
     fn holds(self, chart: Chart) -> bool {
-        self == Self::Pan || chart == Chart::HalfPlane
+        self == Self::Primary || chart == Chart::HalfPlane
     }
 }
 
@@ -84,9 +92,9 @@ impl Ready {
     }
 
     /// Window pixel position to screen coordinates: from the center, y up as
-    /// in the shader, in units of the scale.
-    fn to_screen(&self, pos: PhysicalPosition<f64>, chart: Chart) -> DVec2 {
-        let (w, h, scale) = self.geometry(Some(chart));
+    /// in the shader, in units of the scale of `chart`, or of the 3D view.
+    fn to_screen(&self, pos: PhysicalPosition<f64>, chart: Option<Chart>) -> DVec2 {
+        let (w, h, scale) = self.geometry(chart);
         DVec2::new(pos.x - 0.5 * w as f64, 0.5 * h as f64 - pos.y) / scale as f64
     }
 }
@@ -102,6 +110,8 @@ struct Model {
     cursor: Option<PhysicalPosition<f64>>,
     modifiers: ModifiersState,
     drag: Option<(MouseButton, Drag)>,
+    /// The last left press, to detect a double click.
+    last_press: Option<(Instant, PhysicalPosition<f64>)>,
     /// When egui next wants a frame.
     repaint_at: Option<Instant>,
 }
@@ -122,12 +132,22 @@ impl Model {
             cursor: None,
             modifiers: ModifiersState::empty(),
             drag: None,
+            last_press: None,
             repaint_at: None,
         }
     }
 
     fn projection(&self) -> Projection {
         self.settings.projection(self.tiling.geometry)
+    }
+
+    /// The chart shown, or none for the 3D view.
+    fn chart(&self) -> Option<Chart> {
+        (!self.settings.view_3d).then(|| self.projection().chart)
+    }
+
+    fn reset_camera(&mut self) {
+        self.camera = Camera::new(self.tiling.geometry, self.settings.extent);
     }
 
     fn title(&self) -> String {
@@ -179,8 +199,12 @@ impl Model {
                 self.set_tiling(t, &gfx.window);
                 Duration::ZERO
             }
-            Some(Action::ResetView) => {
+            Some(Action::ResetTiling) => {
                 self.view = View::new(self.tiling.geometry);
+                Duration::ZERO
+            }
+            Some(Action::ResetCamera) => {
+                self.reset_camera();
                 Duration::ZERO
             }
             Some(Action::PrintView) => {
@@ -192,7 +216,7 @@ impl Model {
         self.repaint_at = Instant::now().checked_add(repaint_after);
         let proj = self.projection();
         let camera = self.settings.view_3d.then_some(&self.camera);
-        let (w, h, scale) = gfx.geometry(camera.is_none().then_some(proj.chart));
+        let (w, h, scale) = gfx.geometry(self.chart());
         let u = Uniforms::new(
             &self.view,
             &self.tiling,
@@ -228,6 +252,7 @@ impl Model {
             KeyCode::KeyH => self.settings.show_panel ^= true,
             KeyCode::KeyD => self.settings.debug ^= true,
             KeyCode::KeyV => self.print_view(window),
+            KeyCode::KeyR if self.modifiers.shift_key() => self.reset_camera(),
             KeyCode::KeyR => self.view = View::new(self.tiling.geometry),
             _ => return,
         }
@@ -240,17 +265,91 @@ impl Model {
         let proj = self.projection();
         let drag = match button {
             MouseButton::Left if self.modifiers.shift_key() => Drag::Secondary,
-            MouseButton::Left => Drag::Pan,
+            MouseButton::Left => Drag::Primary,
             MouseButton::Right => Drag::Secondary,
             _ => return,
         };
-        if self.settings.view_3d {
+        let Some(chart) = self.chart() else {
+            self.drag = Some((button, drag));
             return;
-        }
+        };
         let held = self
             .cursor
-            .is_some_and(|c| self.view.pannable(gfx.to_screen(c, proj.chart), proj));
-        self.drag = (held || !drag.holds(proj.chart)).then_some((button, drag));
+            .is_some_and(|c| self.view.pannable(gfx.to_screen(c, Some(chart)), proj));
+        self.drag = (held || !drag.holds(chart)).then_some((button, drag));
+    }
+
+    /// Moves the chart's view or the camera for a drag from `old` to `new`.
+    fn drag(
+        &mut self,
+        drag: Drag,
+        old: PhysicalPosition<f64>,
+        new: PhysicalPosition<f64>,
+        gfx: &Ready,
+    ) {
+        let chart = self.chart();
+        let [from, to] = [old, new].map(|p| gfx.to_screen(p, chart));
+        let Some(chart) = chart else {
+            match drag {
+                Drag::Primary => self.camera.orbit(-ORBIT_PER_UNIT * (to - from)),
+                Drag::Secondary => self.camera.pan(from, to),
+            }
+            return;
+        };
+        let proj = self.projection();
+        let before = self.view;
+        match (drag, chart) {
+            (Drag::Primary, _) => self.view.pan(from, to, proj),
+            (Drag::Secondary, Chart::Disk) => self.view.rotate(from, to),
+            (Drag::Secondary, Chart::HalfPlane) => self.view.scale(from, to, proj),
+            (Drag::Secondary, Chart::Band) => self.view.slide(from, to),
+        }
+        // Past the edge the grabbed point can't follow; let go.
+        if drag.holds(chart) && !self.view.pannable(to, proj) {
+            self.drag = None;
+        }
+        self.view.settle(&self.tiling);
+        if self.view.too_deep(&self.tiling) {
+            self.view = before;
+        }
+    }
+
+    /// In the 3D view, a double click makes the point of the surface under
+    /// the pointer the camera's target, keeping its direction and distance.
+    fn press(&mut self, gfx: &Ready) {
+        let (Some(pos), true) = (self.cursor, self.settings.view_3d) else {
+            return;
+        };
+        let now = Instant::now();
+        let double = self.last_press.is_some_and(|(t, p)| {
+            now.duration_since(t) <= DOUBLE_CLICK.0
+                && DVec2::new(pos.x - p.x, pos.y - p.y).length() <= DOUBLE_CLICK.1
+        });
+        self.last_press = (!double).then_some((now, pos));
+        if !double {
+            return;
+        }
+        let g = self.tiling.geometry;
+        let ray = self
+            .camera
+            .ray(gfx.to_screen(pos, None), self.settings.fov.to_radians());
+        if let Some(x) = camera::hit(g, camera::cap(g, self.settings.extent), &ray) {
+            self.camera.target = x;
+        }
+    }
+
+    /// A wheel or pinch of `notches`, positive away from the user or
+    /// spreading: dollies the 3D view in, or if `zoom` zooms it in.
+    fn wheel(&mut self, notches: f64, zoom: bool) {
+        if !self.settings.view_3d {
+            return;
+        }
+        let factor = WHEEL_NOTCH.powf(notches);
+        if zoom {
+            self.camera.zoom(factor, &mut self.settings.fov);
+        } else {
+            self.camera.dolly(factor);
+        }
     }
 
     fn window_event(&mut self, gfx: &mut Ready, event: WindowEvent) {
@@ -287,26 +386,29 @@ impl Model {
                 state: ElementState::Released,
                 ..
             } => self.drag = None,
-            WindowEvent::MouseInput { button, .. } if !egui.consumed => self.grab(button, gfx),
+            WindowEvent::MouseInput { button, .. } if !egui.consumed => {
+                if button == MouseButton::Left {
+                    self.press(gfx);
+                }
+                self.grab(button, gfx);
+                gfx.window.request_redraw();
+            }
+            WindowEvent::MouseWheel { delta, .. } if !egui.consumed => {
+                let notches = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y.into(),
+                    MouseScrollDelta::PixelDelta(p) => p.y / 100.0,
+                };
+                self.wheel(notches, self.modifiers.control_key());
+                gfx.window.request_redraw();
+            }
+            // Browsers send pinches as Ctrl+wheel instead.
+            WindowEvent::PinchGesture { delta, .. } if !egui.consumed => {
+                self.wheel(delta / (1.0 - WHEEL_NOTCH), true);
+                gfx.window.request_redraw();
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 if let (Some((_, drag)), Some(old)) = (self.drag, self.cursor) {
-                    let proj = self.projection();
-                    let [from, to] = [old, position].map(|p| gfx.to_screen(p, proj.chart));
-                    let before = self.view;
-                    match (drag, proj.chart) {
-                        (Drag::Pan, _) => self.view.pan(from, to, proj),
-                        (Drag::Secondary, Chart::Disk) => self.view.rotate(from, to),
-                        (Drag::Secondary, Chart::HalfPlane) => self.view.scale(from, to, proj),
-                        (Drag::Secondary, Chart::Band) => self.view.slide(from, to),
-                    }
-                    // Past the edge the grabbed point can't follow; let go.
-                    if drag.holds(proj.chart) && !self.view.pannable(to, proj) {
-                        self.drag = None;
-                    }
-                    self.view.settle(&self.tiling);
-                    if self.view.too_deep(&self.tiling) {
-                        self.view = before;
-                    }
+                    self.drag(drag, old, position, gfx);
                     gfx.window.request_redraw();
                 }
                 self.cursor = Some(position);
