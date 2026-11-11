@@ -47,7 +47,9 @@ A panel at the top left holds the main controls:
 * **3D view:** the surface itself, embedded in space, instead of a chart.
   The hyperboloid and the plane are cut off at the **extent**, a distance
   from the centre. The **field of view** runs from orthographic, 0, to 120°;
-  changing it keeps the size of the picture at the camera's target.
+  changing it keeps the size of the picture at the camera's target. An inset
+  at the bottom right shows the chart, and takes the chart's drags; its
+  buttons swap it with the main view or hide it.
 * **Chart:** the disk, the upper half-plane, or the band (Mercator on the
   sphere). The other two are tied to the disk: the half-plane's ∞ is the top
   of the disk's rim, and the band's axis is its horizontal diameter. They

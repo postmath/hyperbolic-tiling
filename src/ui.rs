@@ -10,7 +10,7 @@ use winit::{event::WindowEvent, raw_window_handle::HasDisplayHandle, window::Win
 use crate::{
     camera::ZOOM_FOVS,
     geom::{CONFORMAL_MU, Chart, Geometry, Projection},
-    gpu::Overlay,
+    gpu::{Overlay, PaneRect},
     tiling::{Count, MAX_LAMBDA, MAX_PQ, Tiling},
 };
 
@@ -19,7 +19,7 @@ Drag: pan. Right drag or Shift+drag: rotate the disk, scale the half-plane
 about ∞, or slide the band along its axis. R: reset the tiling's position.
 In 3D, drag: orbit. Right drag or Shift+drag: move the camera's target.
 Wheel: dolly. Ctrl+wheel or pinch: zoom. Double click: orbit about that
-point. Shift+R: reset the camera.
+point. Shift+R: reset the camera. The inset takes the chart's drags.
 P / Shift+P: step p up / down. Q / Shift+Q: step q.
 L / Shift+L: step the prime ℓ for tile colors. C: toggle tile colors / two-tone.
 H: hide / show the control panel. D: show / hide debug info.
@@ -42,6 +42,10 @@ pub struct Settings {
     pub chart: Chart,
     /// Show the 3D view of the surface rather than a chart.
     pub view_3d: bool,
+    /// In 3D, show the other view in an inset.
+    pub inset: bool,
+    /// In 3D, show the chart in the main pane, and the 3D view in the inset.
+    pub swapped: bool,
     /// How far from the origin the 3D view shows the hyperboloid or plane.
     pub extent: f64,
     /// The 3D view's vertical field of view in degrees; 0 is orthographic.
@@ -60,6 +64,8 @@ impl Default for Settings {
             mu: CONFORMAL_MU,
             chart: Chart::Disk,
             view_3d: false,
+            inset: true,
+            swapped: false,
             extent: 3.0,
             fov: 45.0,
             show_panel: true,
@@ -125,6 +131,7 @@ impl Gui {
         settings: &mut Settings,
         tiling: &Tiling,
         colors: Option<usize>,
+        inset: Option<PaneRect>,
         debug: Option<&str>,
     ) -> Output {
         let input = self.state.take_egui_input(window);
@@ -145,6 +152,9 @@ impl Gui {
                         action = panel(ui, settings, tiling, colors, debug).or(action.take());
                     });
             }
+            if settings.view_3d {
+                inset_controls(ctx, settings, inset);
+            }
         });
         self.state.handle_platform_output(window, platform_output);
         Output {
@@ -159,6 +169,53 @@ impl Gui {
                 .map_or(Duration::MAX, |v| v.repaint_delay),
         }
     }
+}
+
+/// A frame around the inset, with buttons to swap it with the main view and
+/// to hide it; or once hidden, one to show it again.
+fn inset_controls(ctx: &egui::Context, settings: &mut Settings, inset: Option<PaneRect>) {
+    let other = if settings.swapped { "3D" } else { "2D" };
+    let Some([x, y, w, h]) = inset else {
+        let corner = ctx.content_rect().right_bottom() - vec2(8.0, 8.0);
+        egui::Area::new(egui::Id::unique("show inset"))
+            .pivot(Align2::RIGHT_BOTTOM)
+            .fixed_pos(corner)
+            .show(ctx, |ui| {
+                if ui.button(format!("Show {other}")).clicked() {
+                    settings.inset = true;
+                }
+            });
+        return;
+    };
+    let rect = Rect::from_min_size(Pos2::new(x as f32, y as f32), vec2(w as f32, h as f32))
+        / ctx.pixels_per_point();
+    let frame = egui::LayerId::new(egui::Order::Background, egui::Id::unique("inset frame"));
+    ctx.layer_painter(frame).rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0, Color32::from_gray(110)),
+        egui::StrokeKind::Outside,
+    );
+    egui::Area::new(egui::Id::unique("inset buttons"))
+        .pivot(Align2::RIGHT_TOP)
+        .fixed_pos(rect.right_top() + vec2(-4.0, 4.0))
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                let swap = ui
+                    .small_button("Swap")
+                    .on_hover_text("Swap the 2D and 3D views");
+                if swap.clicked() {
+                    settings.swapped ^= true;
+                }
+                if ui
+                    .small_button("Hide")
+                    .on_hover_text(format!("Hide the {other} view"))
+                    .clicked()
+                {
+                    settings.inset = false;
+                }
+            });
+        });
 }
 
 fn panel(

@@ -4,7 +4,7 @@ struct U {
   // width at E, which bounds the cusp's horoball, else 0
   mirrors: array<vec4<f32>, 3>,
   vert: vec4<f32>,           // xyz = V, w = Tiling::size
-  screen: vec4<f32>,         // xy = resolution px, z = px per screen unit
+  screen: vec4<f32>,         // xy = the pane's centre px, z = px per screen unit
   // x = curvature κ, y = projection μ, z = 1 / rim2 or 0, w = chart: 0 disk,
   // 1 half-plane, 2 band
   proj: vec4<f32>,
@@ -80,7 +80,7 @@ fn background() -> vec3<f32> { return vec3<f32>(0.08, 0.08, 0.1); }
 
 // Pixel y points down; flip so the picture is math-oriented (CCW positive).
 fn screen_uv(frag: vec2<f32>) -> vec2<f32> {
-  return vec2<f32>(1.0, -1.0) * (frag - 0.5 * u.screen.xy) / u.screen.z;
+  return vec2<f32>(1.0, -1.0) * (frag - u.screen.xy) / u.screen.z;
 }
 
 @fragment

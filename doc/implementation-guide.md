@@ -13,7 +13,7 @@ Read it next to the code: `jj log` shows one commit per milestone, and
 ## 0. Map of the program
 
 ```
-src/main.rs      winit application: window, input events, App state
+src/main.rs      winit application: window, panes, input events, App state
 src/gpu.rs       wgpu setup, per-frame and offscreen rendering; Uniforms
 src/tiling.wgsl  the vertex and fragment shaders: fold, edges, dots, colors
 src/geom.rs      the three geometries in one model, in f64: forms,
@@ -1739,6 +1739,58 @@ the camera after each step. Two lessons:
 
 ---
 
+## 23. Milestone 23: the 2D inset
+
+Commit: *Show a 2D inset beside the 3D view, swappable and collapsible.*
+
+In 3D, a square inset at the bottom right shows the chart, a third of the
+window's shorter side. Dragging in it moves the tiling as in 2D, and both
+views follow. **Swap** puts the chart in the main pane and the 3D view in
+the inset, and **Hide** leaves only a **Show 2D** (or **3D**) button.
+
+### 23.1 Panes
+
+`main::Pane` is a rectangle of the window and what it shows: a chart, or
+none for the 3D view. `panes` lays them out from the window size and the
+settings: one pane in 2D, two in 3D unless the inset is hidden. What used to
+be the window's geometry is now the pane's. `Pane::geometry` gives the
+centre and scale, and `Pane::to_screen` converts the pointer. The shader's
+`screen.xy` became the pane's centre rather than the window's size, so the
+same formula serves a pane anywhere in the window.
+
+Input goes to the pane under the pointer when a drag starts, and stays
+with that pane until it ends. The pane is kept in `Model::drag`, so that
+Shift pressed midway switches the drag's kind but not its pane. The wheel
+and double click act only in a 3D pane. Keys act on both views wherever
+the pointer is.
+
+### 23.2 Drawing two panes
+
+Both panes are drawn by the same pipeline in one render pass, each with
+its own viewport and scissor rectangle. Each needs its own uniforms, and
+`queue.write_buffer` calls all land before the pass runs, so one buffer
+rewritten between the draws would give both the last values. `Tiler` keeps
+one uniform buffer and bind group per pane instead. After the panes the
+pass is reset to the whole window for egui.
+
+The inset's frame and buttons are egui: a stroke on a background layer,
+which egui still draws over the tiling, and an `Area` pinned to the inset's
+top right corner. Its clicks reach egui first, so they never start a drag.
+Swapped, hidden and shown are settings like the panel's. Only the swap is
+in the view line, as `swap=1`, since it decides what the main pane shows
+and so what `--export` draws.
+
+### 23.3 Checks
+
+Unit tests: the inset's place and centre, and how swapping and hiding
+change the panes. In headless Chrome, driven as in §22.4: a drag in the
+inset changed M and not the camera, the wheel over the inset did nothing,
+and Swap, Hide and Show 2D did what they say. The first attempt's button
+clicks only showed tooltips. The script had pressed, moved ten times on the
+spot and released, which took longer than egui's 0.8 s limit for a click.
+
+---
+
 ## 24. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
@@ -1833,6 +1885,18 @@ snapshot into a commit.
     the colourable values. Between them, fall back to the two-tone colouring
     and grey out the colour controls. `Count::Hyperideal` needs an f64 for
     this, and `Tiling::quotient` an `Option`.
+12. **Panning on the surface.** In 3D, let Ctrl+drag move the tiling: cast
+    the pointer's ray with `camera::hit` at both ends of a motion and apply
+    `Geometry::translate` between the hits, as `View::pan` does in a chart.
+    Let go where the ray grazes the surface, as `pannable` does at the rim.
+13. **The projection, shown.** Draw the projection point $(-\lambda,0,0)$, the
+    plane $x_0=0$ with the disk on it, and the ray from the point through the
+    pointer's hit to its image, so that moving λ shows Klein, Poincaré and
+    Gans as geometry. The shader then needs a second surface, the plane, and
+    whichever of the two hits is nearer.
+14. **A smooth cap.** The rim of the cut bowl is aliased. Fade it over a
+    pixel. Where the far wall shows behind the rim, a fade to the background
+    is wrong: shade both hits and blend them.
 
 ---
 

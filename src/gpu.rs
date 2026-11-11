@@ -24,7 +24,7 @@ pub struct Uniforms {
     pub mirrors: [[f32; 4]; 3],
     /// xyz = V, w = `Tiling::size`.
     pub vert: [f32; 4],
-    /// xy = resolution px, z = px per screen unit; w unused.
+    /// xy = the pane's centre in window px, z = px per screen unit; w unused.
     pub screen: [f32; 4],
     /// x = curvature κ, y = projection μ, z = 1 / rim2 (0 without a rim),
     /// w = chart: 0 disk, 1 half-plane, 2 band.
@@ -48,11 +48,12 @@ pub struct Uniforms {
 }
 
 impl Uniforms {
-    /// For the 3D view with `camera`, else for the chart of `proj`.
+    /// For the 3D view with `camera`, else for the chart of `proj`, in a pane
+    /// of `Pane::geometry`.
     pub fn new(
         view: &View,
         tiling: &Tiling,
-        [w, h, scale]: [f32; 3],
+        [x, y, scale]: [f32; 3],
         proj: Projection,
         camera: Option<&Camera>,
         settings: &Settings,
@@ -90,7 +91,7 @@ impl Uniforms {
             vert: (tiling.vert.unwrap_or(ORIGIN).as_vec3())
                 .extend(tiling.size as f32)
                 .to_array(),
-            screen: [w, h, scale, 0.0],
+            screen: [x, y, scale, 0.0],
             proj: [
                 g.kappa() as f32,
                 proj.mu as f32,
@@ -130,6 +131,12 @@ impl Uniforms {
         }
     }
 }
+
+/// A part of the window in px: left, top, width, height.
+pub type PaneRect = [u32; 4];
+
+/// How many panes a frame can have: the main one and an inset.
+const MAX_PANES: usize = 2;
 
 /// The egui panel for one frame, tessellated.
 pub struct Overlay {
@@ -203,7 +210,8 @@ impl Renderer {
         self.device.limits().max_texture_dimension_2d as usize
     }
 
-    pub fn render(&mut self, uniforms: &Uniforms, mut overlay: Overlay) {
+    /// Draws each pane, in order, then the panel.
+    pub fn render(&mut self, panes: &[(Uniforms, PaneRect)], mut overlay: Overlay) {
         // egui sends each texture change once, so apply them even if the
         // frame is skipped.
         for (id, deltas) in overlay.textures.set.drain() {
@@ -212,13 +220,13 @@ impl Renderer {
                     .update_texture(&self.device, &self.queue, id, &delta);
             }
         }
-        self.draw(uniforms, &overlay);
+        self.draw(panes, &overlay);
         for id in overlay.textures.free.drain() {
             self.egui.free_texture(&id);
         }
     }
 
-    fn draw(&mut self, uniforms: &Uniforms, overlay: &Overlay) {
+    fn draw(&mut self, panes: &[(Uniforms, PaneRect)], overlay: &Overlay) {
         // A suboptimal frame is still presented. Reconfiguring must wait until
         // it is, because wgpu forbids it while a frame is held.
         let (frame, suboptimal) = match self.surface.get_current_texture() {
@@ -230,7 +238,9 @@ impl Renderer {
             }
             _ => return,
         };
-        self.tiler.upload(&self.queue, uniforms);
+        for (slot, (uniforms, _)) in panes.iter().enumerate() {
+            self.tiler.upload(&self.queue, slot, uniforms);
+        }
         let view = frame.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let screen = egui_wgpu::ScreenDescriptor {
@@ -246,7 +256,15 @@ impl Renderer {
         );
         {
             let mut pass = clear_pass(&mut encoder, &view);
-            self.tiler.draw(&mut pass);
+            for (slot, &(_, [x, y, w, h])) in panes.iter().enumerate() {
+                let [fx, fy, fw, fh] = [x, y, w, h].map(|v| v as f32);
+                pass.set_viewport(fx, fy, fw, fh, 0.0, 1.0);
+                pass.set_scissor_rect(x, y, w, h);
+                self.tiler.draw(&mut pass, slot);
+            }
+            let [w, h] = [self.config.width, self.config.height];
+            pass.set_viewport(0.0, 0.0, w as f32, h as f32, 0.0, 1.0);
+            pass.set_scissor_rect(0, 0, w, h);
             self.egui
                 .render(&mut pass.forget_lifetime(), &overlay.primitives, &screen);
         }
@@ -291,22 +309,15 @@ fn clear_pass<'e>(
     })
 }
 
-/// The tiling's fullscreen draw and its uniforms.
+/// The tiling's fullscreen draw, and uniforms for each pane.
 struct Tiler {
     pipeline: wgpu::RenderPipeline,
-    uniform_buf: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    slots: [(wgpu::Buffer, wgpu::BindGroup); MAX_PANES],
 }
 
 impl Tiler {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::include_wgsl!("tiling.wgsl"));
-        let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("uniforms"),
-            size: size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -320,13 +331,22 @@ impl Tiler {
                 count: None,
             }],
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buf.as_entire_binding(),
-            }],
+        let slots = std::array::from_fn(|_| {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("uniforms"),
+                size: size_of::<Uniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.as_entire_binding(),
+                }],
+            });
+            (buffer, bind_group)
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
@@ -354,20 +374,16 @@ impl Tiler {
             multiview_mask: None,
             cache: None,
         });
-        Self {
-            pipeline,
-            uniform_buf,
-            bind_group,
-        }
+        Self { pipeline, slots }
     }
 
-    fn upload(&self, queue: &wgpu::Queue, uniforms: &Uniforms) {
-        queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(uniforms));
+    fn upload(&self, queue: &wgpu::Queue, slot: usize, uniforms: &Uniforms) {
+        queue.write_buffer(&self.slots[slot].0, 0, bytemuck::bytes_of(uniforms));
     }
 
-    fn draw(&self, pass: &mut wgpu::RenderPass) {
+    fn draw(&self, pass: &mut wgpu::RenderPass, slot: usize) {
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_bind_group(0, &self.slots[slot].1, &[]);
         pass.draw(0..3, 0..1);
     }
 }
@@ -405,12 +421,12 @@ pub async fn render_image(uniforms: &Uniforms, [width, height]: [u32; 2]) -> Vec
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    tiler.upload(&queue, uniforms);
+    tiler.upload(&queue, 0, uniforms);
     let mut encoder = device.create_command_encoder(&Default::default());
-    tiler.draw(&mut clear_pass(
-        &mut encoder,
-        &texture.create_view(&Default::default()),
-    ));
+    tiler.draw(
+        &mut clear_pass(&mut encoder, &texture.create_view(&Default::default())),
+        0,
+    );
     encoder.copy_texture_to_buffer(
         texture.as_image_copy(),
         wgpu::TexelCopyBufferInfo {

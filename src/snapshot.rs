@@ -31,6 +31,8 @@ pub struct Snapshot {
     pub vertex_px: f32,
     pub quotient_colors: bool,
     pub view_3d: bool,
+    /// The 3D view's chart in the main pane, which an export shows.
+    pub swapped: bool,
     pub camera: Camera,
     pub extent: f64,
     pub fov: f64,
@@ -55,6 +57,7 @@ impl Snapshot {
             vertex_px: settings.vertex_px,
             quotient_colors: settings.quotient_colors,
             view_3d: settings.view_3d,
+            swapped: settings.swapped,
             camera: *camera,
             extent: settings.extent,
             fov: settings.fov,
@@ -71,6 +74,7 @@ impl Snapshot {
             vertex_px: self.vertex_px,
             quotient_colors: self.quotient_colors,
             view_3d: self.view_3d,
+            swapped: self.swapped,
             extent: self.extent,
             fov: self.fov,
             ..base
@@ -129,6 +133,7 @@ impl Snapshot {
             vertex_px: number("dot")? as f32,
             quotient_colors: get("colors")? == "1",
             view_3d: get("d3").is_ok_and(|v| v == "1"),
+            swapped: get("swap").is_ok_and(|v| v == "1"),
             camera: match get("cam") {
                 Err(_) => Camera::new(tiling.geometry, extent),
                 Ok(_) => {
@@ -183,6 +188,9 @@ impl fmt::Display for Snapshot {
                 ",d3=1,cam={}:{}:{}:{az}:{el}:{h},extent={},fov={}",
                 t.x, t.y, t.z, self.extent, self.fov
             )?;
+            if self.swapped {
+                write!(f, ",swap=1")?;
+            }
         }
         Ok(())
     }
@@ -299,6 +307,7 @@ mod tests {
         let t = Tiling::new(7, 3).unwrap();
         let settings = Settings {
             view_3d: true,
+            swapped: true,
             extent: 3.25,
             fov: 0.0,
             ..Settings::default()
@@ -313,7 +322,7 @@ mod tests {
         let line = line.to_string();
         let back = Snapshot::parse(&line).unwrap();
         assert_eq!(back.to_string(), line);
-        assert!(back.view_3d);
+        assert!(back.view_3d && back.swapped);
         assert_eq!(back.camera, camera);
         assert_eq!((back.extent, back.fov), (3.25, 0.0));
     }

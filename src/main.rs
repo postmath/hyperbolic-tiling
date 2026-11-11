@@ -21,7 +21,7 @@ use winit::{
 
 use camera::Camera;
 use geom::{Chart, Projection};
-use gpu::{Renderer, Uniforms};
+use gpu::{PaneRect, Renderer, Uniforms};
 use snapshot::Snapshot;
 use tiling::Tiling;
 use ui::{Action, Gui, Settings};
@@ -71,31 +71,82 @@ struct Ready {
     gui: Gui,
 }
 
-/// (width, height, scale) in px for a picture of `size`, the scale per
-/// screen unit: the disk's radius, or the distance from the center to the
-/// half-plane's boundary and to the band's edges; for the 3D view, `None`,
-/// half the shorter side.
-fn geometry([w, h]: [u32; 2], chart: Option<Chart>) -> (f32, f32, f32) {
-    let (w, h) = (w as f32, h as f32);
-    let fit = match chart {
-        Some(Chart::Disk) => w.min(h),
-        Some(Chart::HalfPlane | Chart::Band) => h,
-        None => return (w, h, 0.5 * w.min(h)),
+/// A part of the window, and what it shows: a chart, or with none the 3D
+/// view.
+#[derive(Clone, Copy, PartialEq)]
+struct Pane {
+    rect: PaneRect,
+    chart: Option<Chart>,
+}
+
+impl Pane {
+    /// (centre x, centre y, scale) in window px, the scale per screen unit:
+    /// the disk's radius, or the distance from the center to the half-plane's
+    /// boundary and to the band's edges; for the 3D view, half the shorter
+    /// side.
+    fn geometry(&self) -> [f32; 3] {
+        let [x, y, w, h] = self.rect.map(|v| v as f32);
+        let fit = match self.chart {
+            Some(Chart::Disk) => w.min(h),
+            Some(Chart::HalfPlane | Chart::Band) => h,
+            None => w.min(h) + 2.0 * MARGIN_PX,
+        };
+        [x + 0.5 * w, y + 0.5 * h, (0.5 * fit - MARGIN_PX).max(1.0)]
+    }
+
+    fn contains(&self, pos: PhysicalPosition<f64>) -> bool {
+        let [x, y, w, h] = self.rect.map(f64::from);
+        (x..x + w).contains(&pos.x) && (y..y + h).contains(&pos.y)
+    }
+
+    /// Window pixel position to screen coordinates: from the pane's center,
+    /// y up as in the shader, in units of the scale.
+    fn to_screen(self, pos: PhysicalPosition<f64>) -> DVec2 {
+        let [cx, cy, scale] = self.geometry().map(f64::from);
+        DVec2::new(pos.x - cx, cy - pos.y) / scale
+    }
+}
+
+/// The panes of a window of `size`, in the order drawn: the main one, which
+/// fills it, then in 3D the inset, if shown, at the bottom right. The 2D
+/// pane shows `chart`.
+fn panes([w, h]: [u32; 2], settings: &Settings, chart: Chart) -> Vec<Pane> {
+    let full = [0, 0, w, h];
+    if !settings.view_3d {
+        return vec![Pane {
+            rect: full,
+            chart: Some(chart),
+        }];
+    }
+    let (main, inset) = if settings.swapped {
+        (Some(chart), None)
+    } else {
+        (None, Some(chart))
     };
-    (w, h, (0.5 * fit - MARGIN_PX).max(1.0))
+    let mut panes = vec![Pane {
+        rect: full,
+        chart: main,
+    }];
+    if settings.inset {
+        let side = (w.min(h) / 3).max(1);
+        let gap = MARGIN_PX as u32;
+        panes.push(Pane {
+            rect: [
+                w.saturating_sub(side + gap),
+                h.saturating_sub(side + gap),
+                side,
+                side,
+            ],
+            chart: inset,
+        });
+    }
+    panes
 }
 
 impl Ready {
-    fn geometry(&self, chart: Option<Chart>) -> (f32, f32, f32) {
+    fn panes(&self, settings: &Settings, chart: Chart) -> Vec<Pane> {
         let (w, h) = self.renderer.size();
-        geometry([w, h], chart)
-    }
-
-    /// Window pixel position to screen coordinates: from the center, y up as
-    /// in the shader, in units of the scale of `chart`, or of the 3D view.
-    fn to_screen(&self, pos: PhysicalPosition<f64>, chart: Option<Chart>) -> DVec2 {
-        let (w, h, scale) = self.geometry(chart);
-        DVec2::new(pos.x - 0.5 * w as f64, 0.5 * h as f64 - pos.y) / scale as f64
+        panes([w, h], settings, chart)
     }
 }
 
@@ -109,7 +160,7 @@ struct Model {
     camera: Camera,
     cursor: Option<PhysicalPosition<f64>>,
     modifiers: ModifiersState,
-    drag: Option<(MouseButton, Drag)>,
+    drag: Option<(MouseButton, Drag, Pane)>,
     /// The last left press, to detect a double click.
     last_press: Option<(Instant, PhysicalPosition<f64>)>,
     /// When egui next wants a frame.
@@ -141,9 +192,14 @@ impl Model {
         self.settings.projection(self.tiling.geometry)
     }
 
-    /// The chart shown, or none for the 3D view.
-    fn chart(&self) -> Option<Chart> {
-        (!self.settings.view_3d).then(|| self.projection().chart)
+    /// The pane at window position `pos`: the inset if it is there.
+    fn pane_at(&self, pos: PhysicalPosition<f64>, gfx: &Ready) -> Pane {
+        let panes = gfx.panes(&self.settings, self.projection().chart);
+        *panes
+            .iter()
+            .rev()
+            .find(|p| p.contains(pos))
+            .unwrap_or(&panes[0])
     }
 
     fn reset_camera(&mut self) {
@@ -186,11 +242,14 @@ impl Model {
 
     fn paint(&mut self, gfx: &mut Ready) {
         let debug = (self.settings.debug).then(|| snapshot::describe(&self.tiling, &self.view));
+        let panes = gfx.panes(&self.settings, self.projection().chart);
+        let inset = panes.get(1).map(|p| p.rect);
         let out = gfx.gui.run(
             &gfx.window,
             &mut self.settings,
             &self.tiling,
             self.colors,
+            inset,
             debug.as_deref(),
         );
         // The panel was laid out before any action; redraw to show it.
@@ -215,17 +274,22 @@ impl Model {
         };
         self.repaint_at = Instant::now().checked_add(repaint_after);
         let proj = self.projection();
-        let camera = self.settings.view_3d.then_some(&self.camera);
-        let (w, h, scale) = gfx.geometry(self.chart());
-        let u = Uniforms::new(
-            &self.view,
-            &self.tiling,
-            [w, h, scale],
-            proj,
-            camera,
-            &self.settings,
-        );
-        gfx.renderer.render(&u, out.overlay);
+        let panes = gfx.panes(&self.settings, proj.chart);
+        let drawn: Vec<_> = (panes.iter())
+            .map(|pane| {
+                let camera = pane.chart.is_none().then_some(&self.camera);
+                let u = Uniforms::new(
+                    &self.view,
+                    &self.tiling,
+                    pane.geometry(),
+                    proj,
+                    camera,
+                    &self.settings,
+                );
+                (u, pane.rect)
+            })
+            .collect();
+        gfx.renderer.render(&drawn, out.overlay);
     }
 
     fn key(&mut self, code: KeyCode, window: &Window) {
@@ -259,9 +323,9 @@ impl Model {
         window.request_redraw();
     }
 
-    /// Starts the drag that `button` makes with the current modifiers, or
-    /// switches an ongoing one to it.
-    fn grab(&mut self, button: MouseButton, gfx: &Ready) {
+    /// Starts the drag that `button` makes with the current modifiers in
+    /// `pane`, or switches an ongoing one to it.
+    fn grab(&mut self, button: MouseButton, pane: Pane) {
         let proj = self.projection();
         let drag = match button {
             MouseButton::Left if self.modifiers.shift_key() => Drag::Secondary,
@@ -269,27 +333,27 @@ impl Model {
             MouseButton::Right => Drag::Secondary,
             _ => return,
         };
-        let Some(chart) = self.chart() else {
-            self.drag = Some((button, drag));
+        let Some(chart) = pane.chart else {
+            self.drag = Some((button, drag, pane));
             return;
         };
         let held = self
             .cursor
-            .is_some_and(|c| self.view.pannable(gfx.to_screen(c, Some(chart)), proj));
-        self.drag = (held || !drag.holds(chart)).then_some((button, drag));
+            .is_some_and(|c| self.view.pannable(pane.to_screen(c), proj));
+        self.drag = (held || !drag.holds(chart)).then_some((button, drag, pane));
     }
 
-    /// Moves the chart's view or the camera for a drag from `old` to `new`.
+    /// Moves the chart's view or the camera for a drag in `pane` from `old`
+    /// to `new`.
     fn drag(
         &mut self,
         drag: Drag,
+        pane: Pane,
         old: PhysicalPosition<f64>,
         new: PhysicalPosition<f64>,
-        gfx: &Ready,
     ) {
-        let chart = self.chart();
-        let [from, to] = [old, new].map(|p| gfx.to_screen(p, chart));
-        let Some(chart) = chart else {
+        let [from, to] = [old, new].map(|p| pane.to_screen(p));
+        let Some(chart) = pane.chart else {
             match drag {
                 Drag::Primary => self.camera.orbit(-ORBIT_PER_UNIT * (to - from)),
                 Drag::Secondary => self.camera.pan(from, to),
@@ -316,8 +380,8 @@ impl Model {
 
     /// In the 3D view, a double click makes the point of the surface under
     /// the pointer the camera's target, keeping its direction and distance.
-    fn press(&mut self, gfx: &Ready) {
-        let (Some(pos), true) = (self.cursor, self.settings.view_3d) else {
+    fn press(&mut self, pane: Pane) {
+        let (Some(pos), None) = (self.cursor, pane.chart) else {
             return;
         };
         let now = Instant::now();
@@ -332,16 +396,17 @@ impl Model {
         let g = self.tiling.geometry;
         let ray = self
             .camera
-            .ray(gfx.to_screen(pos, None), self.settings.fov.to_radians());
+            .ray(pane.to_screen(pos), self.settings.fov.to_radians());
         if let Some(x) = camera::hit(g, camera::cap(g, self.settings.extent), &ray) {
             self.camera.target = x;
         }
     }
 
     /// A wheel or pinch of `notches`, positive away from the user or
-    /// spreading: dollies the 3D view in, or if `zoom` zooms it in.
-    fn wheel(&mut self, notches: f64, zoom: bool) {
-        if !self.settings.view_3d {
+    /// spreading, in `pane`: dollies the 3D view in, or if `zoom` zooms it
+    /// in.
+    fn wheel(&mut self, notches: f64, zoom: bool, pane: Pane) {
+        if pane.chart.is_some() {
             return;
         }
         let factor = WHEEL_NOTCH.powf(notches);
@@ -369,8 +434,8 @@ impl Model {
             }
             WindowEvent::ModifiersChanged(m) => {
                 self.modifiers = m.state();
-                if let Some((button, _)) = self.drag {
-                    self.grab(button, gfx);
+                if let Some((button, _, pane)) = self.drag {
+                    self.grab(button, pane);
                 }
             }
             WindowEvent::KeyboardInput {
@@ -387,10 +452,14 @@ impl Model {
                 ..
             } => self.drag = None,
             WindowEvent::MouseInput { button, .. } if !egui.consumed => {
+                let Some(pos) = self.cursor else {
+                    return;
+                };
+                let pane = self.pane_at(pos, gfx);
                 if button == MouseButton::Left {
-                    self.press(gfx);
+                    self.press(pane);
                 }
-                self.grab(button, gfx);
+                self.grab(button, pane);
                 gfx.window.request_redraw();
             }
             WindowEvent::MouseWheel { delta, .. } if !egui.consumed => {
@@ -398,17 +467,23 @@ impl Model {
                     MouseScrollDelta::LineDelta(_, y) => y.into(),
                     MouseScrollDelta::PixelDelta(p) => p.y / 100.0,
                 };
-                self.wheel(notches, self.modifiers.control_key());
-                gfx.window.request_redraw();
+                if let Some(pos) = self.cursor {
+                    let pane = self.pane_at(pos, gfx);
+                    self.wheel(notches, self.modifiers.control_key(), pane);
+                    gfx.window.request_redraw();
+                }
             }
             // Browsers send pinches as Ctrl+wheel instead.
             WindowEvent::PinchGesture { delta, .. } if !egui.consumed => {
-                self.wheel(delta / (1.0 - WHEEL_NOTCH), true);
-                gfx.window.request_redraw();
+                if let Some(pos) = self.cursor {
+                    let pane = self.pane_at(pos, gfx);
+                    self.wheel(delta / (1.0 - WHEEL_NOTCH), true, pane);
+                    gfx.window.request_redraw();
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                if let (Some((_, drag)), Some(old)) = (self.drag, self.cursor) {
-                    self.drag(drag, old, position, gfx);
+                if let (Some((_, drag, pane)), Some(old)) = (self.drag, self.cursor) {
+                    self.drag(drag, pane, old, position);
                     gfx.window.request_redraw();
                 }
                 self.cursor = Some(position);
@@ -518,14 +593,13 @@ fn view_line() -> Option<String> {
 fn export(snapshot: &Snapshot, path: &str) -> Result<(), png::EncodingError> {
     let settings = snapshot.settings(Settings::default());
     let proj = settings.projection(snapshot.tiling.geometry);
-    let camera = settings.view_3d.then_some(snapshot.camera);
-    let (w, h, scale) = geometry(snapshot.size, camera.is_none().then_some(proj.chart));
+    let main = panes(snapshot.size, &settings, proj.chart)[0];
     let u = Uniforms::new(
         &snapshot.view,
         &snapshot.tiling,
-        [w, h, scale],
+        main.geometry(),
         proj,
-        camera.as_ref(),
+        main.chart.is_none().then_some(&snapshot.camera),
         &settings,
     );
     let pixels = pollster::block_on(gpu::render_image(&u, snapshot.size));
@@ -607,4 +681,51 @@ fn main() {
     // Returns at once; the browser drives the loop.
     #[cfg(target_arch = "wasm32")]
     winit::platform::web::EventLoopExtWebSys::spawn_app(event_loop, app);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings(swapped: bool, inset: bool) -> Settings {
+        Settings {
+            view_3d: true,
+            swapped,
+            inset,
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn the_inset_sits_inside_the_bottom_right_corner() {
+        let size = [900, 600];
+        let [main, inset] = panes(size, &settings(false, true), Chart::Band)[..] else {
+            panic!("two panes");
+        };
+        assert_eq!(main.rect, [0, 0, 900, 600]);
+        assert_eq!((main.chart, inset.chart), (None, Some(Chart::Band)));
+        let [x, y, w, h] = inset.rect;
+        assert_eq!((w, h), (200, 200));
+        assert_eq!([x + w, y + h], [900 - 8, 600 - 8]);
+        // The 3D view's scale is half its shorter side.
+        assert_eq!(main.geometry(), [450.0, 300.0, 300.0]);
+        let [cx, cy, _] = inset.geometry();
+        assert_eq!([cx, cy], [x as f32 + 100.0, y as f32 + 100.0]);
+        let centre = PhysicalPosition::new(cx as f64, cy as f64);
+        assert!(inset.contains(centre) && inset.to_screen(centre) == DVec2::ZERO);
+    }
+
+    #[test]
+    fn swapping_and_hiding_change_the_panes() {
+        let size = [900, 600];
+        let swapped = panes(size, &settings(true, true), Chart::Disk);
+        assert_eq!(
+            (swapped[0].chart, swapped[1].chart),
+            (Some(Chart::Disk), None)
+        );
+        assert_eq!(panes(size, &settings(false, false), Chart::Disk).len(), 1);
+        let flat = panes(size, &Settings::default(), Chart::Disk);
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat[0].chart, Some(Chart::Disk));
+    }
 }
