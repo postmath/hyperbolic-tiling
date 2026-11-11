@@ -8,7 +8,7 @@ use egui::{
 use winit::{event::WindowEvent, raw_window_handle::HasDisplayHandle, window::Window};
 
 use crate::{
-    camera::ZOOM_FOVS,
+    camera::{DEFAULT_FOV, ZOOM_FOVS},
     geom::{CONFORMAL_MU, Chart, Geometry, Projection},
     gpu::{Overlay, PaneRect},
     tiling::{Count, MAX_LAMBDA, MAX_PQ, Tiling},
@@ -71,7 +71,7 @@ impl Default for Settings {
             swapped: false,
             show_projection: false,
             extent: 3.0,
-            fov: 45.0,
+            fov: DEFAULT_FOV,
             show_panel: true,
             debug: false,
         }

@@ -193,18 +193,29 @@ fn coverage(f: f32, per_px: f32) -> f32 {
   return saturate(0.5 - f / max(per_px, 1e-30));
 }
 
+// `coverage` of the cap's edge by `past_cap`, but only near the cap. Near an
+// outline, the hit moves too far between pixels for its derivative to mean
+// anything, which would draw faint traces of the uncut surface's outline.
+fn cap_coverage(cut: f32) -> f32 {
+  let near = abs(cut) < 0.1 * max(u.cam_right.w, 1.0);
+  return select(select(0.0, 1.0, cut < 0.0), coverage(cut, fwidth(cut)), near);
+}
+
 // The color of the surface at p seen along `dir`, for a pixel with sides
 // dx, dy on the surface, lit. Their lengths' geometric mean is the pixel
 // size; where a neighbour lies elsewhere they are large, and lines fade.
-// The Euclidean normal faces the eye. The side where Q > 1, inside the bowl,
-// above the plane, outside the sphere, is the top; the other is dimmed and
-// greyed so that the two cannot be confused.
+// The Euclidean normal faces the eye. One side is in full colour, the other
+// dimmed and greyed so that the two cannot be confused. The full side is
+// the one the projection sees (math §14.3): outside the bowl, its underside;
+// but outside the sphere, as one looks at a sphere, and above the plane.
 fn lit(p: vec3<f32>, dir: vec3<f32>, dx: vec3<f32>, dy: vec3<f32>) -> vec3<f32> {
   let px = sqrt(sqrt(max(dot(dx, normal(dx)), 0.0) * max(dot(dy, normal(dy)), 0.0))) + 1e-7;
   let shaded = shade(p, px, dx, dy);
   var n = normalize(vec3<f32>(p.x, u.proj.x * p.yz));
-  let top = dot(n, dir) < 0.0;
-  n = select(-n, n, top);
+  // Seen from where Q > 1: inside the bowl, above the plane, outside the sphere.
+  let above = dot(n, dir) < 0.0;
+  n = select(-n, n, above);
+  let top = above != (u.proj.x < 0.0);
   // A headlight, a little to the upper left.
   let light = normalize(-0.3 * normalize(u.cam_right.xyz) + 0.3 * normalize(u.cam_up.xyz) - dir);
   var col = shaded.rgb * (0.55 + 0.45 * max(dot(n, light), 0.0));
@@ -277,8 +288,8 @@ fn space(frag: vec2<f32>) -> vec3<f32> {
   // A convex sheet's silhouette has only the background behind it. Within
   // it, the front hit and, where the cap cuts that away, the hit behind.
   let in_silhouette = select(0.0, coverage(-clamp(disc, -1e6, 1e6), fwidth(disc)), has_front);
-  let cover_front = coverage(cut_front, fwidth(cut_front));
-  let cover_back = select(0.0, coverage(cut_back, fwidth(cut_back)), has_back);
+  let cover_front = cap_coverage(cut_front);
+  let cover_back = select(0.0, cap_coverage(cut_back), has_back);
   // The chart's fade at its rim, which seen obliquely can be thinner than a
   // pixel, so the rim also gets a pixel's blend.
   let to_rim = rho2 * u.proj.z;

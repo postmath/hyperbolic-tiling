@@ -12,6 +12,9 @@ const HALF_HEIGHTS: [f64; 2] = [1e-3, 1e3];
 /// Bounds of the field of view that zooming reaches, in degrees; the panel
 /// reaches 0, orthographic.
 pub const ZOOM_FOVS: [f64; 2] = [1.0, 120.0];
+/// The field of view to start with, in degrees, which `Camera::new` frames
+/// for.
+pub const DEFAULT_FOV: f64 = 45.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
@@ -36,24 +39,64 @@ pub struct Ray {
 }
 
 impl Camera {
-    /// The whole of what `cap` shows, about its middle: the sphere's centre,
-    /// the origin of the plane, or the middle of the bowl's axis. Seen from
-    /// the side opposite x2, so that from straight above the picture would be
-    /// the disk's, with x1 right and x2 up; and from above 45°, the slope of
-    /// the asymptotic cone, so that the near wall of the bowl does not hide
-    /// its bottom.
+    /// The whole of what `cap` shows: the sphere or the plane seen from
+    /// above, or the bowl from below, its side in full colour. Seen from the
+    /// side opposite x2, so that from straight above the picture would be the
+    /// disk's, with x1 right and x2 up.
     pub fn new(g: Geometry, extent: f64) -> Self {
-        let (target, radius) = match g {
-            Geometry::Spherical => (DVec3::ZERO, 1.0),
-            Geometry::Euclidean => (ORIGIN, extent),
-            Geometry::Hyperbolic => (DVec3::X * 0.5 * (1.0 + extent.cosh()), extent.sinh()),
-        };
-        Self {
+        let azimuth = -90f64.to_radians();
+        let above = |target, half_height| Self {
             target,
-            azimuth: -90f64.to_radians(),
+            azimuth,
             elevation: 50f64.to_radians(),
-            half_height: 1.2 * radius,
+            half_height,
+        };
+        match g {
+            Geometry::Spherical => above(DVec3::ZERO, 1.2),
+            Geometry::Euclidean => above(ORIGIN, 1.2 * extent),
+            Geometry::Hyperbolic => Self::below_bowl(extent, azimuth),
         }
+    }
+
+    /// The bowl from 25° below, framing its rim, the Poincaré disk on the
+    /// projection plane and the point projected from. An orthographic camera
+    /// would see a circle of radius r at height x0 span x0 cos e ± r sin e up
+    /// the picture, for the elevation e; starting from there, the target moves
+    /// along the axis to centre the picture, and the half height scales to
+    /// fit it, until perspective agrees.
+    fn below_bowl(extent: f64, azimuth: f64) -> Self {
+        let elevation = -25f64.to_radians();
+        let (sin, cos) = (elevation.abs().sin(), elevation.cos());
+        let (rim_x0, rim_r) = (extent.cosh(), extent.sinh());
+        let circle = |x0: f64, r: f64| {
+            (0..16).map(move |k| {
+                let (s, c) = (k as f64 * std::f64::consts::TAU / 16.0).sin_cos();
+                DVec3::new(x0, r * c, r * s)
+            })
+        };
+        let points: Vec<_> = (circle(rim_x0, rim_r).chain(circle(1.0, 2.0)))
+            .chain([DVec3::new(-1.0, 0.0, 0.0)])
+            .collect();
+        let top = rim_x0 * cos + rim_r * sin;
+        let bottom = (cos - 2.0 * sin).min(-cos);
+        let mut camera = Self {
+            target: DVec3::X * 0.5 * (top + bottom) / cos,
+            azimuth,
+            elevation,
+            half_height: (0.5 * (top - bottom)).max(rim_r),
+        };
+        let fov = DEFAULT_FOV.to_radians();
+        for _ in 0..10 {
+            let seen: Vec<_> = points.iter().map(|&x| camera.project(x, fov)).collect();
+            let (lo, hi) = seen.iter().fold((DVec2::MAX, DVec2::MIN), |(lo, hi), &d| {
+                (lo.min(d), hi.max(d))
+            });
+            let centre = 0.5 * (lo.y + hi.y);
+            let half = (0.5 * (hi.y - lo.y)).max(lo.x.abs()).max(hi.x.abs());
+            camera.target.x += centre * camera.half_height / cos;
+            camera.half_height *= half / 0.87;
+        }
+        camera
     }
 
     /// Unit vectors right, up, and back toward the camera.
@@ -129,7 +172,6 @@ impl Camera {
     }
 
     /// Where `x` appears, as a screen position for `ray`.
-    #[cfg(test)]
     pub fn project(&self, x: DVec3, fov: f64) -> DVec2 {
         let [right, up, back] = self.basis();
         let v = x - self.target;
@@ -282,7 +324,7 @@ mod tests {
             let c = Camera::new(g, 3.0);
             let cap = cap(g, 3.0);
             for fov in FOVS {
-                for d in [DVec2::new(0.3, -0.2), DVec2::new(-0.4, 0.3)] {
+                for d in [DVec2::new(0.1, 0.2), DVec2::new(-0.2, 0.3)] {
                     let ray = c.ray(d, fov);
                     let x = hit(g, cap, &ray).unwrap();
                     assert!(on_surface(g, x) && shown(g, cap, x), "{g:?} {d}");
@@ -292,6 +334,39 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// The default view of the bowl, from below, shows its rim, the Poincaré
+    /// disk on the projection plane and the point projected from, filling
+    /// most of the picture.
+    #[test]
+    fn the_bowl_is_framed_from_below() {
+        for extent in [1.0, 2.0, 3.0, 5.0] {
+            let c = Camera::new(Geometry::Hyperbolic, extent);
+            let fov = DEFAULT_FOV.to_radians();
+            // Each circle's farthest point from the centre of the picture.
+            let farthest = |x0: f64, r: f64| {
+                (0..64)
+                    .map(|k| {
+                        let (s, co) = (k as f64 * std::f64::consts::TAU / 64.0).sin_cos();
+                        let x = DVec3::new(x0, r * co, r * s);
+                        c.project(x, fov).abs().max_element()
+                    })
+                    .fold(0.0, f64::max)
+            };
+            let projector = c
+                .project(DVec3::new(-1.0, 0.0, 0.0), fov)
+                .abs()
+                .max_element();
+            let extents = [
+                farthest(extent.cosh(), extent.sinh()),
+                farthest(1.0, 2.0),
+                projector,
+            ];
+            assert!(extents.iter().all(|&e| e < 0.9), "{extent}: {extents:?}");
+            assert!(extents.iter().any(|&e| e > 0.8), "{extent}: {extents:?}");
+            assert!(c.elevation < 0.0);
         }
     }
 

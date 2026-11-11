@@ -1389,11 +1389,22 @@ $1/\sqrt{Q(x)}$ before the fold.
 ### 14.3 Which side
 
 $\nabla Q=2(x_0,\kappa x_1,\kappa x_2)$ points to where $Q>1$: into the
-bowl, above the plane, out of the sphere. That side is the top. A ray sees
-the top if $r\cdot\nabla Q<0$. From below 45° a camera outside the bowl sees
-its underside, and its near wall hides the bottom. That is why the default
-view looks from 50°. The underside is drawn dimmer and greyer, so that
-the two sides cannot be confused.
+bowl, above the plane, out of the sphere. A ray sees that side if
+$r\cdot\nabla Q<0$. One side is drawn in full colour, the other dimmer and
+greyer, so that the two cannot be confused.
+
+The bowl's full side is its underside, the side the projection of §10.7
+sees: the line from $(-\lambda,0,0)$, $\lambda\ge0$, always reaches the
+upper sheet from below, where $Q<1$ (§14.6). By the same rule the sphere's
+would be its inside, since that line reaches the pictured point from inside
+the sphere for every λ. But one looks at a sphere from outside, so there
+the outside is full, and the plane's is its top. The default view looks at
+the bowl from 25° below and at the others from 50° above. Seen from below,
+the tiling is the mirror image of the 2D chart's, as exercise 1 shows; the
+picture on the projection plane, seen from below too, agrees with it.
+
+From below 45° a camera outside the bowl does not see into it: the near
+wall hides the bottom.
 
 The lighting is a Lambert term with the Euclidean normal $\nabla Q/|\nabla Q|$
 turned toward the eye, and a light at the camera, a little to the upper left.

@@ -227,7 +227,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §27.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §28.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -726,7 +726,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§26) that is acceptable.
+thousand ALU operations per pixel (§27) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -954,7 +954,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §27.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §28.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1556,7 +1556,7 @@ window and writes it as a PNG, for icons and documentation.
 
 Check: the export of a {5,6} view matched a headless Chrome screenshot of its
 `#view=` URL away from the rim, where the GPU's f32 and SwiftShader's differ
-in the last pixels. Exports also make §27.3's throwaway build unnecessary for
+in the last pixels. Exports also make §28.3's throwaway build unnecessary for
 still pictures.
 
 ---
@@ -1881,7 +1881,42 @@ marked the probe from the 3D view.
 
 ---
 
-## 26. Precision and performance notes
+## 26. Milestone 26: the bowl from below
+
+Commit: *Colour the bowl's underside and start the camera below it.* The
+mathematics is in math §14.3.
+
+The picture on the projection plane lies below the bowl, and the
+projection sees the bowl's underside. So the underside now gets the full
+colour and the inside is dimmed, and the default view looks from below.
+The sphere keeps its outside in full colour, and the plane its top.
+
+* **Sides.** `lit` decides the side as before, by $r\cdot\nabla Q$, and
+  for κ < 0 flips which one is full.
+* **Framing.** `Camera::below_bowl` looks from 25° below and frames the rim,
+  the Poincaré disk on the plane and its projection point $(-1,0,0)$, with
+  or without the projection shown, so that turning it on needs no camera
+  change. A fixed target and scale did not work for every extent: nearer
+  the camera, perspective enlarges the disk, which then pushed the point out
+  of the picture at small extents. So the frame starts from an orthographic
+  estimate and is corrected ten times by projecting sample points with the
+  default field of view, `DEFAULT_FOV`: the target moves along the axis to
+  centre them, and the half height scales them to 0.87 of the pane (test:
+  `the_bowl_is_framed_from_below`, for extents 1 to 5).
+* **Outline traces.** From below, faint dashed lines appeared along the
+  uncut hyperboloid's outline beyond the cap, toward the asymptotes. Near an
+  outline the hit moves far between neighbouring pixels, `fwidth` of its
+  distance past the cap is large, and the cap's coverage came out partial.
+  `cap_coverage` now blends only within a tenth of the cap of the edge, and
+  cuts sharply elsewhere.
+
+Check: exports of {7,3} with extents 1, 1.5, 3 and 4.5, with and without the
+projection, each showing the rim, the disk and the point; the sphere and
+the plane unchanged.
+
+---
+
+## 27. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -1899,9 +1934,9 @@ marked the probe from the 3D view.
 
 ---
 
-## 27. Workflow notes
+## 28. Workflow notes
 
-### 27.1 jj
+### 28.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -1920,13 +1955,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 27.2 Checks before each commit
+### 28.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 27.3 A throwaway verification build
+### 28.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -1936,7 +1971,7 @@ snapshot into a commit.
 
 ---
 
-## 28. Exercises and extensions
+## 29. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.
