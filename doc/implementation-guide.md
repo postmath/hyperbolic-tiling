@@ -14,7 +14,7 @@ Read it next to the code: `jj log` shows one commit per milestone, and
 
 ```
 src/main.rs      winit application: window, input events, App state
-src/gpu.rs       wgpu setup and per-frame rendering; the Uniforms struct
+src/gpu.rs       wgpu setup, per-frame and offscreen rendering; Uniforms
 src/tiling.wgsl  the vertex and fragment shaders: fold, edges, dots, colors
 src/geom.rs      the three geometries in one model, in f64: forms,
                  reflections, translations, rotations, screen <-> surface
@@ -224,7 +224,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §20.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §21.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -723,7 +723,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§19) that is acceptable.
+thousand ALU operations per pixel (§20) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -951,7 +951,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §20.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §21.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1527,7 +1527,38 @@ ideal vertex at the axis's end.
 
 ---
 
-## 19. Precision and performance notes
+## 19. Milestone 19: exporting a picture
+
+Commit: *Export a view to a PNG file from the command line.*
+
+`--view <line> --export <file.png>` renders the line's picture without a
+window and writes it as a PNG, for icons and documentation.
+
+* **Sharing the pipeline.** The shader module, uniform buffer, bind group
+  and pipeline moved from `Renderer` into `gpu::Tiler`, which both the window
+  and the export draw with. Only the target format differs: the surface's,
+  or `Rgba8Unorm`, without the sRGB suffix for the same reason as on screen.
+* **No surface.** `render_image` makes an instance without a display handle,
+  so it needs no window system, and an adapter without a compatible surface.
+  It draws into a texture and copies that into a mappable buffer.
+* **Row padding.** A texture-to-buffer copy needs `bytes_per_row` to be a
+  multiple of `COPY_BYTES_PER_ROW_ALIGNMENT` (256), so rows are padded there
+  and trimmed on readback.
+* **Waiting.** `map_async` only queues the mapping. `Device::poll` with
+  `PollType::wait_indefinitely()` blocks until the copy is done and the
+  callback has run, after which the range can be read.
+* **Size.** The picture has the line's `size`, and `geometry`, now a free
+  function, fits the disk to it as for a window. Edit `size=` in the line to
+  render larger.
+
+Check: the export of a {5,6} view matched a headless Chrome screenshot of its
+`#view=` URL away from the rim, where the GPU's f32 and SwiftShader's differ
+in the last pixels. Exports also make §21.3's throwaway build unnecessary for
+still pictures.
+
+---
+
+## 20. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -1545,9 +1576,9 @@ ideal vertex at the axis's end.
 
 ---
 
-## 20. Workflow notes
+## 21. Workflow notes
 
-### 20.1 jj
+### 21.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -1566,13 +1597,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 20.2 Checks before each commit
+### 21.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 20.3 A throwaway verification build
+### 21.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -1582,7 +1613,7 @@ snapshot into a commit.
 
 ---
 
-## 21. Exercises and extensions
+## 22. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.

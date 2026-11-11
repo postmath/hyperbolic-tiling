@@ -113,9 +113,7 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    pipeline: wgpu::RenderPipeline,
-    uniform_buf: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    tiler: Tiler,
     egui: egui_wgpu::Renderer,
 }
 
@@ -135,16 +133,7 @@ impl Renderer {
             })
             .await
             .expect("no suitable GPU adapter");
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                // The default limits assume compute shaders, which WebGL2 lacks
-                // and this app does not use.
-                required_limits: wgpu::Limits::downlevel_webgl2_defaults()
-                    .using_resolution(adapter.limits()),
-                ..Default::default()
-            })
-            .await
-            .expect("request device");
+        let (device, queue) = request_device(&adapter).await;
 
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
@@ -154,6 +143,133 @@ impl Renderer {
         config.format = config.format.remove_srgb_suffix();
         surface.configure(&device, &config);
 
+        let tiler = Tiler::new(&device, config.format);
+        let egui = egui_wgpu::Renderer::new(&device, config.format, Default::default());
+
+        Self {
+            surface,
+            device,
+            queue,
+            config,
+            tiler,
+            egui,
+        }
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        self.config.width = width;
+        self.config.height = height;
+        self.surface.configure(&self.device, &self.config);
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        (self.config.width, self.config.height)
+    }
+
+    pub fn max_texture_side(&self) -> usize {
+        self.device.limits().max_texture_dimension_2d as usize
+    }
+
+    pub fn render(&mut self, uniforms: &Uniforms, mut overlay: Overlay) {
+        // egui sends each texture change once, so apply them even if the
+        // frame is skipped.
+        for (id, deltas) in overlay.textures.set.drain() {
+            for delta in deltas {
+                self.egui
+                    .update_texture(&self.device, &self.queue, id, &delta);
+            }
+        }
+        self.draw(uniforms, &overlay);
+        for id in overlay.textures.free.drain() {
+            self.egui.free_texture(&id);
+        }
+    }
+
+    fn draw(&mut self, uniforms: &Uniforms, overlay: &Overlay) {
+        // A suboptimal frame is still presented. Reconfiguring must wait until
+        // it is, because wgpu forbids it while a frame is held.
+        let (frame, suboptimal) = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(f) => (f, false),
+            wgpu::CurrentSurfaceTexture::Suboptimal(f) => (f, true),
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(&self.device, &self.config);
+                return;
+            }
+            _ => return,
+        };
+        self.tiler.upload(&self.queue, uniforms);
+        let view = frame.texture.create_view(&Default::default());
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [self.config.width, self.config.height],
+            pixels_per_point: overlay.pixels_per_point,
+        };
+        let egui_cmds = self.egui.update_buffers(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &overlay.primitives,
+            &screen,
+        );
+        {
+            let mut pass = clear_pass(&mut encoder, &view);
+            self.tiler.draw(&mut pass);
+            self.egui
+                .render(&mut pass.forget_lifetime(), &overlay.primitives, &screen);
+        }
+        self.queue
+            .submit(egui_cmds.into_iter().chain([encoder.finish()]));
+        self.queue.present(frame);
+        if suboptimal {
+            self.surface.configure(&self.device, &self.config);
+        }
+    }
+}
+
+async fn request_device(adapter: &wgpu::Adapter) -> (wgpu::Device, wgpu::Queue) {
+    adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            // The default limits assume compute shaders, which WebGL2 lacks
+            // and this app does not use.
+            required_limits: wgpu::Limits::downlevel_webgl2_defaults()
+                .using_resolution(adapter.limits()),
+            ..Default::default()
+        })
+        .await
+        .expect("request device")
+}
+
+fn clear_pass<'e>(
+    encoder: &'e mut wgpu::CommandEncoder,
+    view: &wgpu::TextureView,
+) -> wgpu::RenderPass<'e> {
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: None,
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        ..Default::default()
+    })
+}
+
+/// The tiling's fullscreen draw and its uniforms.
+struct Tiler {
+    pipeline: wgpu::RenderPipeline,
+    uniform_buf: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+impl Tiler {
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::include_wgsl!("tiling.wgsl"));
         let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("uniforms"),
@@ -203,112 +319,88 @@ impl Renderer {
                 module: &shader,
                 entry_point: Some("fs"),
                 compilation_options: Default::default(),
-                targets: &[Some(config.format.into())],
+                targets: &[Some(format.into())],
             }),
             multiview_mask: None,
             cache: None,
         });
-
-        let egui = egui_wgpu::Renderer::new(&device, config.format, Default::default());
-
         Self {
-            surface,
-            device,
-            queue,
-            config,
             pipeline,
             uniform_buf,
             bind_group,
-            egui,
         }
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
-            return;
-        }
-        self.config.width = width;
-        self.config.height = height;
-        self.surface.configure(&self.device, &self.config);
+    fn upload(&self, queue: &wgpu::Queue, uniforms: &Uniforms) {
+        queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(uniforms));
     }
 
-    pub fn size(&self) -> (u32, u32) {
-        (self.config.width, self.config.height)
+    fn draw(&self, pass: &mut wgpu::RenderPass) {
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.draw(0..3, 0..1);
     }
+}
 
-    pub fn max_texture_side(&self) -> usize {
-        self.device.limits().max_texture_dimension_2d as usize
-    }
-
-    pub fn render(&mut self, uniforms: &Uniforms, mut overlay: Overlay) {
-        // egui sends each texture change once, so apply them even if the
-        // frame is skipped.
-        for (id, deltas) in overlay.textures.set.drain() {
-            for delta in deltas {
-                self.egui
-                    .update_texture(&self.device, &self.queue, id, &delta);
-            }
-        }
-        self.draw(uniforms, &overlay);
-        for id in overlay.textures.free.drain() {
-            self.egui.free_texture(&id);
-        }
-    }
-
-    fn draw(&mut self, uniforms: &Uniforms, overlay: &Overlay) {
-        // A suboptimal frame is still presented. Reconfiguring must wait until
-        // it is, because wgpu forbids it while a frame is held.
-        let (frame, suboptimal) = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f) => (f, false),
-            wgpu::CurrentSurfaceTexture::Suboptimal(f) => (f, true),
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.config);
-                return;
-            }
-            _ => return,
-        };
-        self.queue
-            .write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(uniforms));
-        let view = frame.texture.create_view(&Default::default());
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        let screen = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [self.config.width, self.config.height],
-            pixels_per_point: overlay.pixels_per_point,
-        };
-        let egui_cmds = self.egui.update_buffers(
-            &self.device,
-            &self.queue,
-            &mut encoder,
-            &overlay.primitives,
-            &screen,
-        );
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.draw(0..3, 0..1);
-            self.egui
-                .render(&mut pass.forget_lifetime(), &overlay.primitives, &screen);
-        }
-        self.queue
-            .submit(egui_cmds.into_iter().chain([encoder.finish()]));
-        self.queue.present(frame);
-        if suboptimal {
-            self.surface.configure(&self.device, &self.config);
-        }
-    }
+/// Draws one frame without a window or panel, as RGBA rows of `width` px.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn render_image(uniforms: &Uniforms, [width, height]: [u32; 2]) -> Vec<u8> {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter =
+        (instance.request_adapter(&Default::default()).await).expect("no suitable GPU adapter");
+    let (device, queue) = request_device(&adapter).await;
+    // Unconverted, as on screen.
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let tiler = Tiler::new(&device, format);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let row = 4 * width;
+    let padded_row = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(padded_row * height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    tiler.upload(&queue, uniforms);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    tiler.draw(&mut clear_pass(
+        &mut encoder,
+        &texture.create_view(&Default::default()),
+    ));
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_row),
+                rows_per_image: None,
+            },
+        },
+        texture.size(),
+    );
+    queue.submit([encoder.finish()]);
+    buffer.map_async(wgpu::MapMode::Read, .., |r| r.expect("map buffer"));
+    (device.poll(wgpu::PollType::wait_indefinitely())).expect("wait for GPU");
+    let data = buffer.get_mapped_range(..).expect("read buffer");
+    (data.chunks(padded_row as usize))
+        .flat_map(|r| &r[..row as usize])
+        .copied()
+        .collect()
 }
 
 #[cfg(test)]

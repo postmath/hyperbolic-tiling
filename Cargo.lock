@@ -893,6 +893,7 @@ dependencies = [
  "egui-winit",
  "glam",
  "naga",
+ "png",
  "pollster",
  "wasm-bindgen",
  "wasm-bindgen-futures",

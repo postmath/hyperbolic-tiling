@@ -70,7 +70,8 @@ Mouse and keyboard:
 To reproduce a printed view, pass the line to `--view`, as in
 `cargo run --release -- --view v1,p=7,q=3,...`, or append it to the page's
 address as `#view=v1,p=7,q=3,...`. The browser console prints that address
-too.
+too. Adding `--export <file.png>` writes the picture to a PNG file instead,
+at the line's size and without the panel, and opens no window.
 
 p and q range over 3..=32 and ∞: an infinite q gives ideal polygons, like the
 Farey tessellation {3,∞}, and an infinite p gives apeirogons. Beyond ∞ come

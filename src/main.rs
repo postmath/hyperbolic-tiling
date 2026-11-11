@@ -61,18 +61,22 @@ struct Ready {
     gui: Gui,
 }
 
+/// (width, height, scale) in px for a picture of `size`, the scale per
+/// screen unit: the disk's radius, or the distance from the center to the
+/// half-plane's boundary and to the band's edges.
+fn geometry([w, h]: [u32; 2], chart: Chart) -> (f32, f32, f32) {
+    let (w, h) = (w as f32, h as f32);
+    let fit = match chart {
+        Chart::Disk => w.min(h),
+        Chart::HalfPlane | Chart::Band => h,
+    };
+    (w, h, (0.5 * fit - MARGIN_PX).max(1.0))
+}
+
 impl Ready {
-    /// (width, height, scale) in px, the scale per screen unit: the disk's
-    /// radius, or the distance from the center to the half-plane's boundary
-    /// and to the band's edges.
     fn geometry(&self, chart: Chart) -> (f32, f32, f32) {
         let (w, h) = self.renderer.size();
-        let (w, h) = (w as f32, h as f32);
-        let fit = match chart {
-            Chart::Disk => w.min(h),
-            Chart::HalfPlane | Chart::Band => h,
-        };
-        (w, h, (0.5 * fit - MARGIN_PX).max(1.0))
+        geometry([w, h], chart)
     }
 
     /// Window pixel position to screen coordinates: from the center, y up as
@@ -372,19 +376,46 @@ impl ApplicationHandler<Renderer> for App {
     }
 }
 
+/// The value after the command line option `name`.
+#[cfg(not(target_arch = "wasm32"))]
+fn arg(name: &str) -> Option<String> {
+    let mut args = std::env::args().skip_while(|a| a != name);
+    args.next()?;
+    args.next()
+}
+
 /// The line given with `--view` (native) or as a `#view=` URL fragment (web).
 fn view_line() -> Option<String> {
     #[cfg(not(target_arch = "wasm32"))]
-    {
-        let mut args = std::env::args().skip_while(|a| a != "--view");
-        args.next()?;
-        args.next()
-    }
+    return arg("--view");
     #[cfg(target_arch = "wasm32")]
     {
         let hash = web_sys::window()?.location().hash().ok()?;
         hash.strip_prefix("#view=").map(str::to_owned)
     }
+}
+
+/// Writes the picture of `snapshot`, without the panel, to a PNG file.
+#[cfg(not(target_arch = "wasm32"))]
+fn export(snapshot: &Snapshot, path: &str) -> Result<(), png::EncodingError> {
+    let settings = snapshot.settings(Settings::default());
+    let proj = settings.projection(snapshot.tiling.geometry);
+    let (w, h, scale) = geometry(snapshot.size, proj.chart);
+    let u = Uniforms::new(
+        &snapshot.view,
+        &snapshot.tiling,
+        [w, h, scale],
+        proj,
+        &settings,
+    );
+    let pixels = pollster::block_on(gpu::render_image(&u, snapshot.size));
+    let file = std::io::BufWriter::new(std::fs::File::create(path)?);
+    let [width, height] = snapshot.size;
+    let mut encoder = png::Encoder::new(file, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+    encoder.write_header()?.write_image_data(&pixels)
 }
 
 /// Prints a line to stdout, or in the browser to the console, there with
@@ -423,6 +454,18 @@ fn main() {
         }
         s => s.map(Result::unwrap),
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(path) = arg("--export") {
+        let Some(snapshot) = &snapshot else {
+            eprintln!("--export needs --view");
+            std::process::exit(2);
+        };
+        if let Err(e) = export(snapshot, &path) {
+            eprintln!("{path}: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let event_loop = EventLoop::with_user_event()
         .build()
         .expect("create event loop");
