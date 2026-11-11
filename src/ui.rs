@@ -22,6 +22,9 @@ H: hide / show the control panel. D: show / hide debug info.
 V: print the exact view as a line, to load with --view or #view=.";
 
 const LATTICE_PX: f32 = 280.0;
+/// The largest extent of the 3D view: the distance from O at which the
+/// Poincaré disk's rim fade starts, x0 = 99, where f32 still holds.
+const MAX_EXTENT: f64 = 5.0;
 
 pub struct Settings {
     /// Color tiles by the finite quotient, rather than two-tone by parity.
@@ -33,6 +36,12 @@ pub struct Settings {
     pub mu: f64,
     /// The chart chosen, shown where it applies; see `Projection::new`.
     pub chart: Chart,
+    /// Show the 3D view of the surface rather than a chart.
+    pub view_3d: bool,
+    /// How far from the origin the 3D view shows the hyperboloid or plane.
+    pub extent: f64,
+    /// The 3D view's vertical field of view in degrees; 0 is orthographic.
+    pub fov: f64,
     pub show_panel: bool,
     /// Show the view's state in the panel.
     pub debug: bool,
@@ -46,6 +55,9 @@ impl Default for Settings {
             vertex_px: 3.5,
             mu: CONFORMAL_MU,
             chart: Chart::Disk,
+            view_3d: false,
+            extent: 3.0,
+            fov: 45.0,
             show_panel: true,
             debug: false,
         }
@@ -191,6 +203,9 @@ fn panel(
     });
     ui.separator();
 
+    space(ui, settings, tiling.geometry);
+    ui.separator();
+
     projection(ui, settings, tiling.geometry);
     ui.separator();
 
@@ -208,6 +223,20 @@ fn panel(
     }
     ui.collapsing("Help", |ui| ui.label(USAGE));
     action
+}
+
+/// The 3D view's switch and settings.
+fn space(ui: &mut Ui, settings: &mut Settings, g: Geometry) {
+    ui.checkbox(&mut settings.view_3d, "3D view");
+    ui.add_enabled_ui(settings.view_3d && g != Geometry::Spherical, |ui| {
+        ui.add(Slider::new(&mut settings.extent, 1.0..=MAX_EXTENT).text("Extent"));
+    })
+    .response
+    .on_disabled_hover_text(if settings.view_3d {
+        "The 3D view shows the whole sphere."
+    } else {
+        "For the 3D view."
+    });
 }
 
 /// Projection presets with their μ; see `Geometry::disk_to_point`.

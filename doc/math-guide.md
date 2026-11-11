@@ -14,7 +14,7 @@ picture and the colors to the Euclidean and spherical tilings, which the code
 handles in the same formulas, parametrized by the curvature $\kappa$.
 Section 11 adds infinite $p$ and $q$, and section 12 the hyperideal labels
 beyond them. Section 13 adds two more conformal pictures, the half-plane and
-the band.
+the band, and section 14 a view of the surface itself in 3D.
 
 Each section ends with the places in the code where the material is used,
 and with a few exercises. Formulas that appear in the code are marked
@@ -1330,6 +1330,115 @@ $s\mapsto s+c$, and the reflection in the axis is $t\mapsto-t$.
    period in terms of the edge length.
 4. Show that $s+it=2\arctan z$ is Mercator's projection, with the poles at
    $z=\pm i$.
+
+---
+
+## 14. The surface in 3D
+
+Every picture so far is a chart: a map from the screen onto the surface. The
+3D view instead shows the surface itself, embedded in Euclidean $\mathbb R^3$
+with $x_0$ up, as a camera would see it. It is tied to the view like the
+charts are: $M$ moves the tiling over a surface that stays put.
+
+### 14.1 What is drawn
+
+The three surfaces are the level set $Q(x)=1$ of
+$$Q(x)=x_0^2+\kappa\,(x_1^2+x_2^2)\qquad\textbf{(code: `qform` in the shader)},$$
+restricted to $x_0>0$ unless $\kappa=1$: the upper sheet of the hyperboloid,
+a bowl with the asymptotic cone $x_0=r$ (slope 45°); the plane $x_0=1$; and the
+unit sphere. The bowl and the plane are infinite, so they are cut off at a
+distance `extent` from $O$: at $x_0\le\cosh(\text{extent})$ on the
+hyperboloid and at $x_1^2+x_2^2\le\text{extent}^2$ on the plane
+**(code: `camera::cap`)**. The sphere is shown whole.
+
+The embedding is not an isometry for $\kappa=-1$. A tangent vector $v$ has
+Euclidean length$^2$ $v_0^2+v_1^2+v_2^2$ but hyperbolic length$^2$
+$v^{\mathsf T}Kv=-v_0^2+v_1^2+v_2^2$. Along a circle about the axis $v_0=0$,
+so the two agree. Along a radius at distance $r$ from $O$ a unit of
+hyperbolic length is $\sqrt{\cosh 2r}\approx e^r/\sqrt2$ Euclidean units
+long. Tiles far out are therefore long thin spokes, about $e^r/\sqrt2$
+times longer than wide. This is a property of the embedding, not an artifact.
+
+### 14.2 Rays
+
+The camera has a target $T$, a unit frame (right $R$, up $U$, back $B$) and a
+half height $h$: the model length from the centre of the picture to the
+nearer edge of the pane, measured at the target. Screen position $d$, in
+units of half the shorter side, has the ray
+$$x(t)=o+t\,r,\qquad o=T+h\,(d_1R+d_2U),$$
+with $r=-B$ for an orthographic camera, and $r$ the unit vector from the eye
+$T+hB/\tan(\phi/2)$ to $o$ for a perspective one with field of view
+$\phi$. The origin $o$ lies in the plane through $T$ facing the camera, so
+it stays near the surface whatever the field of view. That keeps f32 from
+losing digits to a distant eye. In exchange, $t$ is allowed to be negative,
+down to the eye ($-\infty$ when orthographic).
+
+Substituting into $Q(x)=1$ gives $at^2+2bt+c=0$ with $a=Q(r)$,
+$b=Q(o,r)$, $c=Q(o)-1$ for the bilinear $Q(\cdot,\cdot)$. With
+$s=-(b+\operatorname{sign}(b)\sqrt{b^2-ac})$ the roots are $s/a$ and $c/s$,
+without the cancellation of the textbook formula. For $\kappa=0$,
+$a=r_0^2$ and the roots are where $x_0=\pm1$. The first root, in order of
+$t$, that is past the eye, on the right sheet and within the cap is the
+point seen **(code: `camera::hit`, shader `space`)**. Looking across the bowl,
+the near wall may be cut away by the cap, and then the second root is the
+far wall, seen through the opening.
+
+Rounding moves the hit off the surface, so it is scaled back by
+$1/\sqrt{Q(x)}$ before the fold.
+
+### 14.3 Which side
+
+$\nabla Q=2(x_0,\kappa x_1,\kappa x_2)$ points to where $Q>1$: into the
+bowl, above the plane, out of the sphere. That side is the top. A ray sees
+the top if $r\cdot\nabla Q<0$. From below 45° a camera outside the bowl sees
+its underside, and its near wall hides the bottom. That is why the default
+view looks from 50°. The underside is drawn dimmer and greyer, so that
+the two sides cannot be confused.
+
+The lighting is a Lambert term with the Euclidean normal $\nabla Q/|\nabla Q|$
+turned toward the eye, and a light at the camera, a little to the upper left.
+
+### 14.4 Pixel size
+
+The charts know a pixel's model size analytically (§10.7, §13.4). Here the
+GPU's screen derivatives give it: $p_x=\partial x/\partial\text{px}_x$
+and $p_y$ along the pixel's two sides, of model lengths
+$\sqrt{p^{\mathsf T}Kp}$. Their geometric mean serves where one size is
+needed, as for the f32 checks of §9.
+
+It does not serve for lines. At a grazing angle, or on a spoke, a pixel is
+much longer one way than the other. A line drawn with one size per pixel
+is then too thick across one direction and too thin across the other. So
+the fold carries $p_x$ and $p_y$ along with the point: each reflection
+$x\mapsto x-2(c\cdot x)Kc$ is linear, and is applied to them too. In the
+fundamental triangle the distance to a line $c$ is
+$\operatorname{asin}_\kappa(c\cdot t)$, whose change per pixel near the line
+is $|(c\cdot p_x,\ c\cdot p_y)|$. That is the pixel size across that line, and
+the edge VE and the vertex dot each use their own. Lines then keep their
+width in pixels in every direction, as in the charts.
+
+### 14.5 In the code
+
+* `camera::Camera` holds $T$, the azimuth and elevation of $B$, and $h$. The
+  field of view and the extent are settings, like λ.
+* The uniforms carry $T$, $hR$, $hU$, and either the eye's offset $hB/\tan(\phi/2)$
+  or $B$. A flag in `cam_target.w` sends the fragment shader to `space`
+  before anything else. The branch depends only on a uniform, so the
+  derivatives in `space` are taken in uniform control flow, as WGSL
+  requires.
+* Tests: the camera frame is orthonormal and level, and from straight
+  above shows the disk's way up; rays through the centre hit a target on the
+  surface; hits are on the surface, shown, and on the sphere's near side;
+  and a ray over the cut rim finds the far wall.
+
+**Exercises.**
+1. Show that a perspective camera with its eye at $(-\lambda,0,0)$, looking
+   up the axis, sees the disk of §10.7 at $\mu=\lambda/(1+\lambda)$, mirrored.
+   Which side of the bowl does it see?
+2. An orthographic camera looking straight down sees the Gans projection.
+   Where does a circle about the axis at distance $r$ appear?
+3. At what elevation does an orthographic camera first see $O$ over the
+   near wall of a bowl cut at $x_0\le\cosh e$?
 
 ---
 

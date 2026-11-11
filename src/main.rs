@@ -1,3 +1,4 @@
+mod camera;
 mod geom;
 mod gpu;
 mod quotient;
@@ -18,6 +19,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
+use camera::Camera;
 use geom::{Chart, Projection};
 use gpu::{Renderer, Uniforms};
 use snapshot::Snapshot;
@@ -63,18 +65,20 @@ struct Ready {
 
 /// (width, height, scale) in px for a picture of `size`, the scale per
 /// screen unit: the disk's radius, or the distance from the center to the
-/// half-plane's boundary and to the band's edges.
-fn geometry([w, h]: [u32; 2], chart: Chart) -> (f32, f32, f32) {
+/// half-plane's boundary and to the band's edges; for the 3D view, `None`,
+/// half the shorter side.
+fn geometry([w, h]: [u32; 2], chart: Option<Chart>) -> (f32, f32, f32) {
     let (w, h) = (w as f32, h as f32);
     let fit = match chart {
-        Chart::Disk => w.min(h),
-        Chart::HalfPlane | Chart::Band => h,
+        Some(Chart::Disk) => w.min(h),
+        Some(Chart::HalfPlane | Chart::Band) => h,
+        None => return (w, h, 0.5 * w.min(h)),
     };
     (w, h, (0.5 * fit - MARGIN_PX).max(1.0))
 }
 
 impl Ready {
-    fn geometry(&self, chart: Chart) -> (f32, f32, f32) {
+    fn geometry(&self, chart: Option<Chart>) -> (f32, f32, f32) {
         let (w, h) = self.renderer.size();
         geometry([w, h], chart)
     }
@@ -82,7 +86,7 @@ impl Ready {
     /// Window pixel position to screen coordinates: from the center, y up as
     /// in the shader, in units of the scale.
     fn to_screen(&self, pos: PhysicalPosition<f64>, chart: Chart) -> DVec2 {
-        let (w, h, scale) = self.geometry(chart);
+        let (w, h, scale) = self.geometry(Some(chart));
         DVec2::new(pos.x - 0.5 * w as f64, 0.5 * h as f64 - pos.y) / scale as f64
     }
 }
@@ -94,6 +98,7 @@ struct Model {
     /// Number of quotient colors, if small enough to count.
     colors: Option<usize>,
     view: View,
+    camera: Camera,
     cursor: Option<PhysicalPosition<f64>>,
     modifiers: ModifiersState,
     drag: Option<(MouseButton, Drag)>,
@@ -110,6 +115,10 @@ impl Model {
             colors: tiling.quotient.orbit_size(),
             // As printed, without settling, so that it stays exactly the same.
             view: snapshot.map_or_else(|| View::new(tiling.geometry), |s| s.view),
+            camera: snapshot.map_or_else(
+                || Camera::new(tiling.geometry, Settings::default().extent),
+                |s| s.camera,
+            ),
             cursor: None,
             modifiers: ModifiersState::empty(),
             drag: None,
@@ -134,6 +143,7 @@ impl Model {
         // A view of one geometry means nothing in another.
         if tiling.geometry != self.tiling.geometry {
             self.view = View::new(tiling.geometry);
+            self.camera = Camera::new(tiling.geometry, self.settings.extent);
         }
         self.tiling = tiling;
         self.colors = tiling.quotient.orbit_size();
@@ -147,6 +157,7 @@ impl Model {
         let snapshot = Snapshot::new(
             &self.tiling,
             &self.view,
+            &self.camera,
             &self.settings,
             [size.width, size.height],
         );
@@ -180,12 +191,14 @@ impl Model {
         };
         self.repaint_at = Instant::now().checked_add(repaint_after);
         let proj = self.projection();
-        let (w, h, scale) = gfx.geometry(proj.chart);
+        let camera = self.settings.view_3d.then_some(&self.camera);
+        let (w, h, scale) = gfx.geometry(camera.is_none().then_some(proj.chart));
         let u = Uniforms::new(
             &self.view,
             &self.tiling,
             [w, h, scale],
             proj,
+            camera,
             &self.settings,
         );
         gfx.renderer.render(&u, out.overlay);
@@ -231,6 +244,9 @@ impl Model {
             MouseButton::Right => Drag::Secondary,
             _ => return,
         };
+        if self.settings.view_3d {
+            return;
+        }
         let held = self
             .cursor
             .is_some_and(|c| self.view.pannable(gfx.to_screen(c, proj.chart), proj));
@@ -400,12 +416,14 @@ fn view_line() -> Option<String> {
 fn export(snapshot: &Snapshot, path: &str) -> Result<(), png::EncodingError> {
     let settings = snapshot.settings(Settings::default());
     let proj = settings.projection(snapshot.tiling.geometry);
-    let (w, h, scale) = geometry(snapshot.size, proj.chart);
+    let camera = settings.view_3d.then_some(snapshot.camera);
+    let (w, h, scale) = geometry(snapshot.size, camera.is_none().then_some(proj.chart));
     let u = Uniforms::new(
         &snapshot.view,
         &snapshot.tiling,
         [w, h, scale],
         proj,
+        camera.as_ref(),
         &settings,
     );
     let pixels = pollster::block_on(gpu::render_image(&u, snapshot.size));

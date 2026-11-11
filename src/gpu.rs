@@ -5,6 +5,7 @@ use glam::DVec3;
 use winit::{event_loop::OwnedDisplayHandle, window::Window};
 
 use crate::{
+    camera::{self, Camera},
     geom::{Chart, ORIGIN, Projection},
     tiling::Tiling,
     ui::Settings,
@@ -36,20 +37,45 @@ pub struct Uniforms {
     pub color_frame: [[u32; 4]; 3],
     /// x = ℓ, or 0 for two-tone parity coloring; yzw unused.
     pub ell: [u32; 4],
+    /// The 3D view, see `camera`. xyz = target, w = 1 for 3D, 0 for a chart.
+    pub cam_target: [f32; 4],
+    /// xyz = right, scaled by `Camera::half_height`; w = `camera::cap`.
+    pub cam_right: [f32; 4],
+    /// xyz = up, scaled likewise; w unused.
+    pub cam_up: [f32; 4],
+    /// xyz = from the target to the eye, w = 1; or orthographic, xyz = back, w = 0.
+    pub cam_back: [f32; 4],
 }
 
 impl Uniforms {
+    /// For the 3D view with `camera`, else for the chart of `proj`.
     pub fn new(
         view: &View,
         tiling: &Tiling,
         [w, h, scale]: [f32; 3],
         proj: Projection,
+        camera: Option<&Camera>,
         settings: &Settings,
     ) -> Self {
         let v4 = |v: DVec3| v.as_vec3().extend(0.0).to_array();
         let u4 = |[x, y, z]: [u32; 3]| [x, y, z, 0];
         let (g, quot) = (tiling.geometry, &tiling.quotient);
         let m_inv = view.m.inverse();
+        let (mut cam_target, mut cam_right, mut cam_up, mut cam_back) = Default::default();
+        if let Some(c) = camera {
+            let fov = settings.fov.to_radians();
+            let [right, up, back] = c.basis().map(|v| v.as_vec3());
+            let h = c.half_height as f32;
+            let cap = camera::cap(g, settings.extent).min(f32::MAX.into());
+            cam_target = c.target.as_vec3().extend(1.0).to_array();
+            cam_right = (h * right).extend(cap as f32).to_array();
+            cam_up = (h * up).extend(0.0).to_array();
+            cam_back = match c.eye_offset(fov) {
+                Some(offset) => offset.as_vec3().extend(1.0),
+                None => back.extend(0.0),
+            }
+            .to_array();
+        }
         Self {
             m_inv: [v4(m_inv.x_axis), v4(m_inv.y_axis), v4(m_inv.z_axis)],
             mirrors: std::array::from_fn(|k| {
@@ -97,6 +123,10 @@ impl Uniforms {
                 0,
                 0,
             ],
+            cam_target,
+            cam_right,
+            cam_up,
+            cam_back,
         }
     }
 }

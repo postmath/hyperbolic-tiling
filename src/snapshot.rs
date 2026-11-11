@@ -9,6 +9,7 @@ use std::fmt;
 use glam::{DMat3, DVec3};
 
 use crate::{
+    camera::Camera,
     geom::Chart,
     quotient::Quotient,
     tiling::{Count, Tiling},
@@ -29,12 +30,22 @@ pub struct Snapshot {
     pub line_px: f32,
     pub vertex_px: f32,
     pub quotient_colors: bool,
+    pub view_3d: bool,
+    pub camera: Camera,
+    pub extent: f64,
+    pub fov: f64,
     /// Window size in physical pixels; it sets the scale.
     pub size: [u32; 2],
 }
 
 impl Snapshot {
-    pub fn new(tiling: &Tiling, view: &View, settings: &Settings, size: [u32; 2]) -> Self {
+    pub fn new(
+        tiling: &Tiling,
+        view: &View,
+        camera: &Camera,
+        settings: &Settings,
+        size: [u32; 2],
+    ) -> Self {
         Self {
             tiling: *tiling,
             view: *view,
@@ -43,6 +54,10 @@ impl Snapshot {
             line_px: settings.line_px,
             vertex_px: settings.vertex_px,
             quotient_colors: settings.quotient_colors,
+            view_3d: settings.view_3d,
+            camera: *camera,
+            extent: settings.extent,
+            fov: settings.fov,
             size,
         }
     }
@@ -55,6 +70,9 @@ impl Snapshot {
             line_px: self.line_px,
             vertex_px: self.vertex_px,
             quotient_colors: self.quotient_colors,
+            view_3d: self.view_3d,
+            extent: self.extent,
+            fov: self.fov,
             ..base
         }
     }
@@ -74,11 +92,11 @@ impl Snapshot {
         let number = |key: &str| -> Result<f64, String> {
             get(key)?.parse().map_err(|e| format!("{key}: {e}"))
         };
-        let list = |key: &str| -> Result<Vec<&str>, String> {
+        let list = |key: &str, len: usize| -> Result<Vec<&str>, String> {
             let items: Vec<_> = get(key)?.split(':').collect();
             match items.len() {
-                9 => Ok(items),
-                n => Err(format!("{key}: 9 entries, not {n}")),
+                n if n == len => Ok(items),
+                n => Err(format!("{key}: {len} entries, not {n}")),
             }
         };
         let (p, q) = (parse_count(get("p")?)?, parse_count(get("q")?)?);
@@ -86,13 +104,15 @@ impl Snapshot {
         let quotient = Quotient::new(p, q, ell).ok_or(format!("ℓ = {ell} is not admissible"))?;
         let tiling = Tiling::new(p, q).ok_or(format!("no tiling {{{p},{q}}}"))?;
         let tiling = Tiling { quotient, ..tiling };
-        let m: Vec<f64> = (list("m")?.iter())
+        let m: Vec<f64> = (list("m", 9)?.iter())
             .map(|x| x.parse().map_err(|e| format!("m: {e}")))
             .collect::<Result<_, String>>()?;
-        let frame: Vec<u32> = (list("frame")?.iter())
+        let frame: Vec<u32> = (list("frame", 9)?.iter())
             .map(|x| x.parse().map_err(|e| format!("frame: {e}")))
             .collect::<Result<_, String>>()?;
         let (w, h) = get("size")?.split_once('x').ok_or("size: WxH")?;
+        // Only lines of the 3D view have this and the camera.
+        let extent = get("extent").map_or(Ok(Settings::default().extent), |_| number("extent"))?;
         let pixels = |x: &str| x.parse::<u32>().map_err(|e| format!("size: {e}"));
         let size = [pixels(w)?, pixels(h)?];
         Ok(Self {
@@ -108,6 +128,23 @@ impl Snapshot {
             line_px: number("line")? as f32,
             vertex_px: number("dot")? as f32,
             quotient_colors: get("colors")? == "1",
+            view_3d: get("d3").is_ok_and(|v| v == "1"),
+            camera: match get("cam") {
+                Err(_) => Camera::new(tiling.geometry, extent),
+                Ok(_) => {
+                    let c: Vec<f64> = (list("cam", 6)?.iter())
+                        .map(|x| x.parse().map_err(|e| format!("cam: {e}")))
+                        .collect::<Result<_, String>>()?;
+                    Camera {
+                        target: DVec3::new(c[0], c[1], c[2]),
+                        azimuth: c[3],
+                        elevation: c[4],
+                        half_height: c[5],
+                    }
+                }
+            },
+            extent,
+            fov: get("fov").map_or(Ok(Settings::default().fov), |_| number("fov"))?,
             size,
         })
     }
@@ -137,7 +174,17 @@ impl fmt::Display for Snapshot {
             self.line_px,
             self.vertex_px,
             self.quotient_colors as u8,
-        )
+        )?;
+        if self.view_3d {
+            let c = &self.camera;
+            let (t, az, el, h) = (c.target, c.azimuth, c.elevation, c.half_height);
+            write!(
+                f,
+                ",d3=1,cam={}:{}:{}:{az}:{el}:{h},extent={},fov={}",
+                t.x, t.y, t.z, self.extent, self.fov
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -229,7 +276,8 @@ mod tests {
                 quotient_colors: false,
                 ..Settings::default()
             };
-            let line = Snapshot::new(&t, &v, &settings, [1900, 1000]).to_string();
+            let camera = Camera::new(t.geometry, settings.extent);
+            let line = Snapshot::new(&t, &v, &camera, &settings, [1900, 1000]).to_string();
             let back = Snapshot::parse(&line).unwrap();
             assert_eq!(back.to_string(), line);
             assert_eq!((back.tiling.p, back.tiling.q), (p, q));
@@ -241,8 +289,33 @@ mod tests {
             let old = Snapshot::parse(&line.replace(",chart=band", "")).unwrap();
             assert_eq!(old.chart, Chart::Disk);
             assert!(Snapshot::parse(&line.replace("chart=band", "chart=x")).is_err());
+            assert!(!back.view_3d);
             assert!(!line.contains(|c: char| " ;&#'\"".contains(c)), "{line}");
         }
+    }
+
+    #[test]
+    fn round_trips_the_3d_view() {
+        let t = Tiling::new(7, 3).unwrap();
+        let settings = Settings {
+            view_3d: true,
+            extent: 3.25,
+            fov: 0.0,
+            ..Settings::default()
+        };
+        let camera = Camera {
+            target: DVec3::new(1.5, -0.25, 0.125),
+            azimuth: 0.1,
+            elevation: -0.7,
+            half_height: 3.3,
+        };
+        let line = Snapshot::new(&t, &View::new(t.geometry), &camera, &settings, [800, 600]);
+        let line = line.to_string();
+        let back = Snapshot::parse(&line).unwrap();
+        assert_eq!(back.to_string(), line);
+        assert!(back.view_3d);
+        assert_eq!(back.camera, camera);
+        assert_eq!((back.extent, back.fov), (3.25, 0.0));
     }
 
     #[test]

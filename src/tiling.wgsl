@@ -14,6 +14,13 @@ struct U {
   cox: array<vec4<u32>, 3>,
   color_frame: array<vec4<u32>, 3>,
   ell: vec4<u32>,
+  // The 3D view (see camera.rs): the target, w = 1 for 3D; right and up,
+  // scaled to the pane, with w = the cap; and from the target to the eye,
+  // w = 1, or for an orthographic view back, w = 0.
+  cam_target: vec4<f32>,
+  cam_right: vec4<f32>,
+  cam_up: vec4<f32>,
+  cam_back: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: U;
 
@@ -67,11 +74,21 @@ fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
   return vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
 }
 
+// A function, since a vector const at module scope made Mesa 26.0's RADV
+// crash compiling the pipeline.
+fn background() -> vec3<f32> { return vec3<f32>(0.08, 0.08, 0.1); }
+
+// Pixel y points down; flip so the picture is math-oriented (CCW positive).
+fn screen_uv(frag: vec2<f32>) -> vec2<f32> {
+  return vec2<f32>(1.0, -1.0) * (frag - 0.5 * u.screen.xy) / u.screen.z;
+}
+
 @fragment
 fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
-  // Pixel y points down; flip so the picture is math-oriented (CCW positive).
-  let uv = vec2<f32>(1.0, -1.0) * (frag.xy - 0.5 * u.screen.xy) / u.screen.z;
-  let bg = vec3<f32>(0.08, 0.08, 0.1);
+  // A uniform branch, so `space` may take derivatives.
+  if (u.cam_target.w == 1.0) { return vec4<f32>(space(frag.xy), 1.0); }
+  let uv = screen_uv(frag.xy);
+  let bg = background();
 
   // The point under the pixel, as in Geometry::screen_to_point; its model
   // length per screen unit, the larger of two if not conformal; and `rim`,
@@ -115,7 +132,92 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     len = 2.0 * g * max(1.0, g / (a + b * x0));
   }
   if (rim > 0.999) { return vec4<f32>(bg, 1.0); }
+  // The pixel size, analytic: fwidth needs uniform control flow, which the
+  // early returns break.
+  let shaded = shade(p, len / u.screen.z, vec3<f32>(0.0), vec3<f32>(0.0));
+  // Fade at the rim: f32 gives out at the hyperbolic one, and the sphere's
+  // horizon would otherwise be a hard edge.
+  return vec4<f32>(mix(shaded.rgb, bg, max(smoothstep(0.98, 0.999, rim), shaded.a)), 1.0);
+}
+
+// Q(a, b) = a0 b0 + κ(a1 b1 + a2 b2); the surface is Q(x, x) = 1.
+fn qform(a: vec3<f32>, b: vec3<f32>) -> f32 {
+  return a.x * b.x + u.proj.x * (a.y * b.y + a.z * b.z);
+}
+
+// Whether x on the surface is shown: on the upper sheet or the plane, and
+// within the cap, x0 <= cap for κ < 0 and x1² + x2² <= cap otherwise.
+fn shown(x: vec3<f32>) -> bool {
+  let far = select(dot(x.yz, x.yz), x.x, u.proj.x < 0.0);
+  return (u.proj.x > 0.0 || x.x > 0.0) && far <= u.cam_right.w;
+}
+
+// The 3D view: the first shown point of the surface along the pixel's ray,
+// as in camera::hit, shaded and lit. No branch may depend on the pixel
+// before the derivatives below.
+fn space(frag: vec2<f32>) -> vec3<f32> {
+  let uv = screen_uv(frag);
+  let o = u.cam_target.xyz + uv.x * u.cam_right.xyz + uv.y * u.cam_up.xyz;
+  let perspective = u.cam_back.w == 1.0;
+  let from_eye = o - (u.cam_target.xyz + u.cam_back.xyz);
+  let dir = select(-u.cam_back.xyz, normalize(from_eye), perspective);
+  let t_min = select(-3.0e38, -length(from_eye), perspective);
+  // a t² + 2b t + c = 0, with roots s/a and c/s; guarded divisions keep
+  // inf and NaN, which WGSL leaves undefined, out of reach.
+  let a = qform(dir, dir);
+  let b = qform(o, dir);
+  let c = qform(o, o) - 1.0;
+  let disc = b * b - a * c;
+  let sq = sqrt(max(disc, 0.0));
+  let s = -(b + select(-sq, sq, b >= 0.0));
+  let r1 = select(3.0e38, s / select(1.0, a, a != 0.0), a != 0.0);
+  let r2 = select(3.0e38, c / select(1.0, s, s != 0.0), s != 0.0);
+  let lo = min(r1, r2);
+  let hi = max(r1, r2);
+  let ok_lo = lo > t_min && lo < 1.0e30 && shown(o + lo * dir);
+  let ok_hi = hi > t_min && hi < 1.0e30 && shown(o + hi * dir);
+  let ok = disc >= 0.0 && (ok_lo || ok_hi);
+  // Back onto the surface, which rounding has left.
+  let x = o + select(hi, lo, ok_lo) * dir;
+  let p = select(u.cam_target.xyz, x / sqrt(max(qform(x, x), 1e-30)), ok);
+  // The pixel's sides on the surface; the geometric mean of their lengths is
+  // the pixel size. Where a neighbour misses they are large, and lines fade.
+  let dx = dpdx(p);
+  let dy = dpdy(p);
+  let px = sqrt(sqrt(max(dot(dx, normal(dx)), 0.0) * max(dot(dy, normal(dy)), 0.0))) + 1e-7;
+  if (!ok) { return background(); }
+
+  let shaded = shade(p, px, dx, dy);
+  // The Euclidean normal, facing the eye. The side where Q > 1, inside the
+  // bowl, above the plane, outside the sphere, is the top; the other is
+  // dimmed and greyed so that the two cannot be confused.
+  var n = normalize(vec3<f32>(p.x, u.proj.x * p.yz));
+  let top = dot(n, dir) < 0.0;
+  n = select(-n, n, top);
+  // A headlight, a little to the upper left.
+  let light = normalize(-0.3 * normalize(u.cam_right.xyz) + 0.3 * normalize(u.cam_up.xyz) - dir);
+  var col = shaded.rgb * (0.55 + 0.45 * max(dot(n, light), 0.0));
+  if (!top) {
+    col = 0.85 * mix(col, vec3<f32>(dot(col, vec3<f32>(0.3, 0.6, 0.1))), 0.6);
+  }
+  return mix(col, background(), shaded.a);
+}
+
+// The length across a line of covector c, per pixel, from the pixel's sides
+// tx, ty carried along with t: its gradient c·t, which near the line is that
+// of the distance. The 3D view is far from conformal, so lines and dots need
+// this; the charts pass zero sides and use px throughout.
+fn px_across(c: vec3<f32>, tx: vec3<f32>, ty: vec3<f32>, px: f32) -> f32 {
+  return select(px, length(vec2<f32>(dot(c, tx), dot(c, ty))) + 1e-7, any(tx != vec3<f32>(0.0)));
+}
+
+// The color of the surface point p for a pixel of model size px and sides
+// dx, dy (or zero), and in w how far it fades to the background because f32
+// has lost it.
+fn shade(p: vec3<f32>, px: f32, dx: vec3<f32>, dy: vec3<f32>) -> vec4<f32> {
   var t = u.m_inv * p;
+  var tx = u.m_inv * dx;
+  var ty = u.m_inv * dy;
 
   // In a cusp f32 may not resolve the pixel. The fold finds the pixel's
   // place u - 2kh in the cusp's strip of width h, with u = c_0·t and
@@ -168,6 +270,10 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
       let image = c0 - steps * n;
       t = t - 2.0 * dot(t, image) * normal(image);
       t = t - 2.0 * dot(t, c0) * normal(c0);
+      tx = tx - 2.0 * dot(tx, image) * normal(image);
+      tx = tx - 2.0 * dot(tx, c0) * normal(c0);
+      ty = ty - 2.0 * dot(ty, image) * normal(image);
+      ty = ty - 2.0 * dot(ty, c0) * normal(c0);
       changed = true;
       // acc · φ(image): image is the line α·mirrors with α = (1-k) e_0 - k e_j,
       // and φ of its reflection is I + (Nα)αᵀ; see Quotient::reflect_right.
@@ -187,6 +293,8 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
       let d = dot(t, c);
       if (d < 0.0) {
         t = t - 2.0 * d * normal(c);
+        tx = tx - 2.0 * dot(tx, c) * normal(c);
+        ty = ty - 2.0 * dot(ty, c) * normal(c);
         parity ^= 1u;
         changed = true;
         // acc · σ_k: column k gains acc · n_k.
@@ -196,10 +304,6 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     }
     if (!changed) { break; }
   }
-
-  // Analytic length of one pixel. Used instead of fwidth because derivatives
-  // need uniform control flow, which the early return and fold loop break.
-  let px = len / u.screen.z;
 
   // More generally the fold maps the pixel back by an isometry of norm about
   // |t| / |t folded|, magnifying t's rounding to about that times ULP·scale.
@@ -234,14 +338,17 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   // Near an ideal V: one triangle's width across the cusp. A fold that f32
   // lost may end outside D, where this is no width, so it is clamped.
   let s = max(d_ov, 0.0) + d_edge;
-  var w = min(0.5 * u.style.x * px, 0.08 * u.vert.w);
+  let px_edge = px_across(u.mirrors[2].xyz, tx, ty, px);
+  var w = min(0.5 * u.style.x * px_edge, 0.08 * u.vert.w);
   if (u.mirrors[2].w > 0.0) {
     w = min(w, 0.1 * s);
   }
-  let r = min(u.style.y * px, 0.2 * u.vert.w);
 
   let dv = t - u.vert.xyz;
-  let d_vert = 2.0 * asin_k(0.5 * sqrt(max(dot(dv, normal(dv)), 0.0)));  // via the chord
+  let chord = sqrt(max(dot(dv, normal(dv)), 0.0));
+  let d_vert = 2.0 * asin_k(0.5 * chord);
+  let px_dot = px_across(normal(dv) / max(chord, 1e-30), tx, ty, px);
+  let r = min(u.style.y * px_dot, 0.2 * u.vert.w);
 
   // Around an ideal V the tiles are g(ac)^m P for m ∈ ℤ, each 2s wide across
   // the cusp. Where they are under 2 px wide, colors and lines blend toward
@@ -284,17 +391,15 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   // One edge, 2w wide, per tile 2s wide covers w/s of the fan on average.
   // That uses the cusp width h_v of the unfolded point, which is invariant
   // under the fold, and still valid where f32 has lost the folded one.
-  let edge_sample = (1.0 - smoothstep(w - 0.5*px, w + 0.5*px, d_edge)) * saturate(2.0*w/px);
+  let edge_sample = (1.0 - smoothstep(w - 0.5*px_edge, w + 0.5*px_edge, d_edge))
+    * saturate(2.0*w/px_edge);
   let w_v = min(min(0.5 * u.style.x * px, 0.08 * u.vert.w), 0.1 * h_v);
   let edge_mean = select(0.0, saturate(w_v / h_v), h_v > 0.0);
   let edge_cov = mix(edge_mean, edge_sample, fan * trust.y) * trust.x * (1.0 - faded);
   col = mix(col, vec3<f32>(1.0), edge_cov);
   // Below a pixel, a line's coverage scales with its width, a dot's with its area.
-  let dot_cov = (1.0 - smoothstep(r - 0.5*px, r + 0.5*px, d_vert)) * pow(saturate(2.0*r/px), 2.0)
-    * trusted;
+  let dot_cov = (1.0 - smoothstep(r - 0.5*px_dot, r + 0.5*px_dot, d_vert))
+    * pow(saturate(2.0*r/px_dot), 2.0) * trusted;
   col = mix(col, vec3<f32>(1.0, 0.8, 0.2), dot_cov);
-  // Fade at the rim: f32 gives out at the hyperbolic one, and the sphere's
-  // horizon would otherwise be a hard edge.
-  col = mix(col, bg, max(smoothstep(0.98, 0.999, rim), faded));
-  return vec4<f32>(col, 1.0);
+  return vec4<f32>(col, faded);
 }

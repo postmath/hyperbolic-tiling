@@ -5,10 +5,11 @@ wgpu and winit. Hyperbolic tilings are shown in the Poincaré disk, Euclidean
 ones as a plane to pan over, and spherical ones (the Platonic solids) by
 stereographic projection of the sphere. The projection point can be moved,
 from the Klein and gnomonic projections to the Gans and orthographic ones.
+A 3D view shows the hyperboloid, plane or sphere itself.
 
 The whole picture is drawn by one fragment shader. Each pixel is mapped onto
-the hyperboloid, plane or sphere and reflected back into the fundamental triangle of the
-$(2,p,q)$ triangle group. All state and the precision-sensitive math stay on
+the hyperboloid, plane or sphere, through a chart or along a camera ray, and
+reflected back into the fundamental triangle of the $(2,p,q)$ triangle group. All state and the precision-sensitive math stay on
 the CPU in f64. Tiles are colored through a finite quotient of the triangle
 group mod a prime ℓ, so every tile keeps the same color however far you pan.
 
@@ -43,6 +44,9 @@ A panel at the top left holds the main controls:
   and the dot colors tell hyperbolic, Euclidean and spherical pairs apart.
 * **Tile colors mod ℓ:** a toggle, plus a stepper for the prime ℓ and the
   resulting color count.
+* **3D view:** the surface itself, embedded in space, instead of a chart.
+  The hyperboloid and the plane are cut off at the **extent**, a distance
+  from the centre.
 * **Chart:** the disk, the upper half-plane, or the band (Mercator on the
   sphere). The other two are tied to the disk: the half-plane's ∞ is the top
   of the disk's rim, and the band's axis is its horizontal diameter. They

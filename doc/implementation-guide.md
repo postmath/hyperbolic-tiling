@@ -20,6 +20,7 @@ src/geom.rs      the three geometries in one model, in f64: forms,
                  reflections, translations, rotations, screen <-> surface
 src/tiling.rs    a {p,q} tiling: mirrors, vertex V, the CPU fold
 src/view.rs      the view matrix M, the drags, settling (rebasing)
+src/camera.rs    the 3D view's camera and rays
 src/quotient.rs  finite quotient mod ℓ for stable tile colors
 src/ui.rs        the egui control panel and the {p,q} lattice picker
 src/snapshot.rs  the exact view state as a line of text, printed and loaded
@@ -35,12 +36,13 @@ What happens per input event and per frame:
 2. The handler calls `window.request_redraw()`. Nothing renders
    continuously; the app is idle unless something changes.
 3. On `RedrawRequested`, `App::paint` lays out the egui panel and applies
-   any change made there. `App::uniforms` packs the state into a 272-byte
+   any change made there. `App::uniforms` packs the state into a 336-byte
    `Uniforms` value: $M^{-1}$ and the mirrors as f32, color data as u32.
    `Renderer::render` uploads it, draws one fullscreen triangle, and draws
    the panel on top.
 4. For every pixel the fragment shader maps the pixel through the disk or
-   another chart (§18) to the hyperboloid, plane or sphere (§9), then through
+   another chart (§18), or along a camera ray (§21), to the hyperboloid,
+   plane or sphere (§9), then through
    $M^{-1}$ into the
    tiling frame. It folds the point into the fundamental triangle and shades
    it.
@@ -225,7 +227,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §22.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §25.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -724,7 +726,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§21) that is acceptable.
+thousand ALU operations per pixel (§24) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -952,7 +954,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §22.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §25.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1554,7 +1556,7 @@ window and writes it as a PNG, for icons and documentation.
 
 Check: the export of a {5,6} view matched a headless Chrome screenshot of its
 `#view=` URL away from the rim, where the GPU's f32 and SwiftShader's differ
-in the last pixels. Exports also make §22.3's throwaway build unnecessary for
+in the last pixels. Exports also make §25.3's throwaway build unnecessary for
 still pictures.
 
 ---
@@ -1586,7 +1588,91 @@ puts them in `dist/icons/`.
 
 ---
 
-## 21. Precision and performance notes
+## 21. Milestone 21: the surface in 3D
+
+Commit: *Ray-cast a 3D view of the hyperboloid, plane or sphere.* The
+mathematics is in math §14.
+
+A **3D view** checkbox replaces the chart by the surface itself, seen by a
+camera. This milestone draws it from a fixed camera. The next two add the
+controls and a 2D inset beside it.
+
+### 21.1 Camera and rays
+
+`camera::Camera` is the target, the camera's azimuth and elevation about
+it, and the half height $h$ of the picture at the target. `basis` gives the
+frame (right, up, back), `ray` the ray through a screen position, and `hit`
+the first shown point along it. `hit` is the CPU replica of the shader, as
+`Tiling::fold` is of the fold, so the root choice is unit-tested. The field
+of view and the extent live in `Settings`, next to λ.
+
+`Camera::new` frames what `cap` shows: the sphere, or the bowl or plane up to
+the extent, from 50° up. It started at 30°, the usual angle for a 3D
+overview, and the first test failed: from there the bowl's near wall hides
+its bottom, because the asymptotic cone rises at 45°. Its target started at
+the vertex $O$. But orbiting a pivot at the bottom of the bowl swings the
+whole bowl around, so the target is the middle of the bowl's axis instead.
+
+### 21.2 The shader
+
+`fs` starts with a branch on a uniform, `cam_target.w`, to `space`. Being
+uniform, it lets `space` take derivatives. There, every choice before
+`dpdx` is a `select`, never an `if` on a pixel value. The 2D path's early
+returns rule derivatives out there. The rest of the old
+`fs` became `shade(p, px, dx, dy)`, which both paths call. It returns the
+colour and the fade to the background, and each caller does its own
+fading: the rim in the charts, lighting and the underside's tint in 3D.
+
+The quadratic's divisions are guarded by `select`s, since WGSL leaves
+division by zero undefined. A ray through the rim may miss the near wall
+and meet the far one, so both roots are tried (math §14.2).
+
+### 21.3 Lines on a foreshortened surface
+
+The first pictures used one pixel size, the geometric mean of the two
+derivatives. On the spokes of the bowl (math §14.1) some edges came out
+thick and others vanished. A pixel there is several times longer radially
+than across, and a line's width runs along one or the other. The fix
+carries the pixel's two sides, `tx` and `ty`, through the fold with the
+point: two more reflections of a vector per mirror. `px_across` turns them
+into the pixel size across a given line, used for the edge VE and the vertex
+dot. The charts pass zero vectors and keep their analytic size.
+
+### 21.4 Panel, view line, export
+
+The panel's **3D view** checkbox and **Extent** slider sit above the
+charts. The extent runs from 1 to 5. At 5 the bowl reaches $x_0\approx74$,
+inside the disk's f32 limit of $x_0=99$ (§18.4). Drags do nothing in 3D for
+now. The view line gains `d3=1,cam=t0:t1:t2:az:el:h,extent=..,fov=..` when the 3D
+view is on. Lines without them load as before. `--export` draws the 3D view
+when the line has it.
+
+`Uniforms` grew by four vec4s to 336 bytes: the target with the 3D flag,
+$hR$ with the cap, $hU$, and the eye's offset from the target, or for an
+orthographic camera the back vector.
+
+### 21.5 Checks
+
+Unit tests: those of math §14.5, and the view line's round trip with a
+camera. Exports of {7,3}, {5,3} and {4,4}, from inside the bowl, from the
+side and from above. In headless Chrome the WebGL2 path rendered the same
+picture. WebGPU, whose compiler checks derivative uniformity strictly,
+still gets no adapter there (§8.3).
+
+The native app then crashed on start with Mesa 26.0's RADV, the AMD Vulkan
+driver, in `create_render_pipeline`: its shader compiler segfaulted, with
+its LLVM backend too. I first took a crash of the export, which happened
+for the 2D view too, for a quirk of the environment and exported with
+`WGPU_BACKEND=gl`. But the 2D view ran on `main`. Bisecting the shader
+from `main`'s, one change at a time, found the trigger: the background
+colour as a module-scope `const BG: vec3<f32>`. Scalar consts are fine. It
+became a function, `background()`. Lesson: a crash that "also happens for
+the old feature" still needs a run of the old code before it is blamed on
+the machine.
+
+---
+
+## 24. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -1604,9 +1690,9 @@ puts them in `dist/icons/`.
 
 ---
 
-## 22. Workflow notes
+## 25. Workflow notes
 
-### 22.1 jj
+### 25.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -1625,13 +1711,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 22.2 Checks before each commit
+### 25.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 22.3 A throwaway verification build
+### 25.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -1641,7 +1727,7 @@ snapshot into a commit.
 
 ---
 
-## 23. Exercises and extensions
+## 26. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.
