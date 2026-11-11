@@ -27,9 +27,6 @@ H: hide / show the control panel. D: show / hide debug info.
 V: print the exact view as a line, to load with --view or #view=.";
 
 const LATTICE_PX: f32 = 280.0;
-/// The largest extent of the 3D view: the distance from O at which the
-/// Poincaré disk's rim fade starts, x0 = 99, where f32 still holds.
-const MAX_EXTENT: f64 = 5.0;
 
 /// What the window shows: the chart or the 3D view, each alone or with the
 /// other in an inset.
@@ -104,11 +101,6 @@ pub struct Settings {
     pub layout: Layout,
     /// In 3D, show how the disk projects the surface; see `Settings::projects`.
     pub show_projection: bool,
-    /// How far from the origin the 3D view shows the hyperboloid or plane.
-    pub extent: f64,
-    /// Over how much of that distance, at its end, they fade out; 0 for a
-    /// sharp edge.
-    pub fade: f64,
     /// The 3D view's vertical field of view in degrees; 0 is orthographic.
     pub fov: f64,
     pub show_panel: bool,
@@ -126,8 +118,6 @@ impl Default for Settings {
             chart: Chart::Disk,
             layout: Layout::Chart,
             show_projection: false,
-            extent: 3.0,
-            fade: 0.5,
             fov: DEFAULT_FOV,
             show_panel: true,
             debug: false,
@@ -365,20 +355,6 @@ fn space(ui: &mut Ui, settings: &mut Settings, g: Geometry) {
         }
     });
     let space = settings.layout.has_space();
-    ui.add_enabled_ui(space && g != Geometry::Spherical, |ui| {
-        ui.add(Slider::new(&mut settings.extent, 1.0..=MAX_EXTENT).text("Extent"));
-        let fade = Slider::new(&mut settings.fade, 0.0..=settings.extent).text("Edge fade");
-        ui.add(fade).on_hover_text(
-            "How much of the extent, at its end, fades out, so that the surface \
-             does not seem to end there; 0 for a sharp edge",
-        );
-    })
-    .response
-    .on_disabled_hover_text(if space {
-        "The 3D view shows the whole sphere."
-    } else {
-        "For the 3D view."
-    });
     let why = if !space {
         Some("For the 3D view.")
     } else if g == Geometry::Euclidean {

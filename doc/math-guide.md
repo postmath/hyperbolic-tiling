@@ -1347,15 +1347,14 @@ $$Q(x)=x_0^2+\kappa\,(x_1^2+x_2^2)\qquad\textbf{(code: `qform` in the shader)},$
 restricted to $x_0>0$ unless $\kappa=1$: the upper sheet of the hyperboloid,
 a bowl with the asymptotic cone $x_0=r$ (slope 45°); the plane $x_0=1$; and the
 unit sphere. The bowl and the plane are infinite, so they are cut off at a
-distance `extent` from $O$: at $x_0\le\cosh(\text{extent})$ on the
-hyperboloid and at $x_1^2+x_2^2\le\text{extent}^2$ on the plane
-**(code: `camera::cap`)**. Over the last `fade` of that distance they turn
-transparent, from opaque at $r=\text{extent}-\text{fade}$ to clear at the
-extent, so that they do not seem to end there **(code: `opacity`)**. On
-the hyperboloid most of what is visible lies in that band: at extent 3 the
-last unit of distance spans the radii from $\sinh2\approx3.6$ to
-$\sinh3\approx10$. So the default fade is half a unit. The sphere is shown
-whole.
+distance $e=3.5$ from $O$ (code: `camera::EXTENT`): at $x_0\le\cosh e$ on
+the hyperboloid and at $x_1^2+x_2^2\le e^2$ on the plane
+**(code: `camera::cap`)**. Over the last half unit of that distance
+(`camera::FADE`) they turn transparent, from opaque at $r=3$ to clear at
+$r=3.5$, so that they do not seem to end there **(code: `opacity`)**. The
+band is narrow because on the hyperboloid most of what is visible lies near
+the edge: the last unit of distance alone spans the radii from
+$\sinh2.5\approx6$ to $\sinh3.5\approx17$. The sphere is shown whole.
 
 The embedding is not an isometry for $\kappa=-1$. A tangent vector $v$ has
 Euclidean length$^2$ $v_0^2+v_1^2+v_2^2$ but hyperbolic length$^2$
@@ -1503,7 +1502,7 @@ formula above).
 ### 14.7 In the code
 
 * `camera::Camera` holds $T$, the azimuth and elevation of $B$, and $h$. The
-  field of view and the extent are settings, like λ.
+  field of view is a setting, like λ.
 * The uniforms carry $T$, $hR$, $hU$, and either the eye's offset $hB/\tan(\phi/2)$
   or $B$. A flag in `cam_target.w` sends the fragment shader to `space`
   before anything else. The branch depends only on a uniform, so the

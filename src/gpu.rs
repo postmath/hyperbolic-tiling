@@ -74,13 +74,13 @@ impl Uniforms {
             let fov = settings.fov.to_radians();
             let [right, up, back] = c.basis().map(|v| v.as_vec3());
             let h = c.half_height as f32;
-            let cap = camera::cap(g, settings.extent).min(f32::MAX.into());
+            let cap = camera::cap(g, camera::EXTENT).min(f32::MAX.into());
             cam_target = c.target.as_vec3().extend(1.0).to_array();
             cam_right = (h * right).extend(cap as f32).to_array();
             let fade = if g == Geometry::Spherical {
                 0.0
             } else {
-                settings.fade
+                camera::FADE
             };
             cam_up = (h * up).extend(fade as f32).to_array();
             cam_back = match c.eye_offset(fov) {

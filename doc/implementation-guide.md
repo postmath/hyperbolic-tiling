@@ -227,7 +227,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §30.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §31.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -726,7 +726,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§29) that is acceptable.
+thousand ALU operations per pixel (§30) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -954,7 +954,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §30.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §31.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1556,7 +1556,7 @@ window and writes it as a PNG, for icons and documentation.
 
 Check: the export of a {5,6} view matched a headless Chrome screenshot of its
 `#view=` URL away from the rim, where the GPU's f32 and SwiftShader's differ
-in the last pixels. Exports also make §30.3's throwaway build unnecessary for
+in the last pixels. Exports also make §31.3's throwaway build unnecessary for
 still pictures.
 
 ---
@@ -1972,7 +1972,26 @@ the sharp edge. The sphere has no edge, and no fade.
 
 ---
 
-## 29. Precision and performance notes
+## 29. Milestone 29: a fixed extent and fade
+
+Commit: *Fix the 3D view's extent and edge fade.*
+
+With the fade, the extent hardly needs adjusting: wherever it is, the
+surface fades out there. So the **Extent** and **Edge fade** sliders are
+gone, and the view always shows the bowl and the plane up to distance 3.5,
+fading out over its last half unit: `camera::EXTENT` and `camera::FADE`.
+That leaves the 3D settings to the view itself, the projection and the
+field of view.
+
+The uniforms still carry the cap and the fade, so the shader did not
+change. `Camera::new` no longer takes an extent; the framing test of §26
+calls `Camera::below_bowl` with extents from 1 to 5 directly, since its
+fitting must still work for any. The view line drops `extent=` and `fade=`,
+and lines that have them still load, at the fixed values.
+
+---
+
+## 30. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -1990,9 +2009,9 @@ the sharp edge. The sphere has no edge, and no fade.
 
 ---
 
-## 30. Workflow notes
+## 31. Workflow notes
 
-### 30.1 jj
+### 31.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -2011,13 +2030,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 30.2 Checks before each commit
+### 31.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 30.3 A throwaway verification build
+### 31.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -2027,7 +2046,7 @@ snapshot into a commit.
 
 ---
 
-## 31. Exercises and extensions
+## 32. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.

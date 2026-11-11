@@ -34,8 +34,6 @@ pub struct Snapshot {
     pub layout: Layout,
     pub show_projection: bool,
     pub camera: Camera,
-    pub extent: f64,
-    pub fade: f64,
     pub fov: f64,
     /// Window size in physical pixels; it sets the scale.
     pub size: [u32; 2],
@@ -60,8 +58,6 @@ impl Snapshot {
             layout: settings.layout,
             show_projection: settings.show_projection,
             camera: *camera,
-            extent: settings.extent,
-            fade: settings.fade,
             fov: settings.fov,
             size,
         }
@@ -77,8 +73,6 @@ impl Snapshot {
             quotient_colors: self.quotient_colors,
             layout: self.layout,
             show_projection: self.show_projection,
-            extent: self.extent,
-            fade: self.fade,
             fov: self.fov,
             ..base
         }
@@ -118,8 +112,6 @@ impl Snapshot {
             .map(|x| x.parse().map_err(|e| format!("frame: {e}")))
             .collect::<Result<_, String>>()?;
         let (w, h) = get("size")?.split_once('x').ok_or("size: WxH")?;
-        // Only lines of the 3D view have this and the camera.
-        let extent = get("extent").map_or(Ok(Settings::default().extent), |_| number("extent"))?;
         let pixels = |x: &str| x.parse::<u32>().map_err(|e| format!("size: {e}"));
         let size = [pixels(w)?, pixels(h)?];
         Ok(Self {
@@ -148,7 +140,7 @@ impl Snapshot {
             },
             show_projection: get("proj").is_ok_and(|v| v == "1"),
             camera: match get("cam") {
-                Err(_) => Camera::new(tiling.geometry, extent),
+                Err(_) => Camera::new(tiling.geometry),
                 Ok(_) => {
                     let c: Vec<f64> = (list("cam", 6)?.iter())
                         .map(|x| x.parse().map_err(|e| format!("cam: {e}")))
@@ -161,9 +153,6 @@ impl Snapshot {
                     }
                 }
             },
-            extent,
-            // Lines from before the fade have a sharp edge.
-            fade: get("fade").map_or(Ok(0.0), |_| number("fade"))?,
             fov: get("fov").map_or(Ok(Settings::default().fov), |_| number("fov"))?,
             size,
         })
@@ -200,8 +189,8 @@ impl fmt::Display for Snapshot {
             let (t, az, el, h) = (c.target, c.azimuth, c.elevation, c.half_height);
             write!(
                 f,
-                ",d3=1,cam={}:{}:{}:{az}:{el}:{h},extent={},fade={},fov={}",
-                t.x, t.y, t.z, self.extent, self.fade, self.fov
+                ",d3=1,cam={}:{}:{}:{az}:{el}:{h},fov={}",
+                t.x, t.y, t.z, self.fov
             )?;
             if !self.layout.space_main() {
                 write!(f, ",swap=1")?;
@@ -305,7 +294,7 @@ mod tests {
                 quotient_colors: false,
                 ..Settings::default()
             };
-            let camera = Camera::new(t.geometry, settings.extent);
+            let camera = Camera::new(t.geometry);
             let line = Snapshot::new(&t, &v, &camera, &settings, [1900, 1000]).to_string();
             let back = Snapshot::parse(&line).unwrap();
             assert_eq!(back.to_string(), line);
@@ -329,8 +318,6 @@ mod tests {
         let settings = Settings {
             layout: Layout::ChartWithSpace,
             show_projection: true,
-            extent: 3.25,
-            fade: 0.75,
             fov: 0.0,
             ..Settings::default()
         };
@@ -356,9 +343,9 @@ mod tests {
             Layout::SpaceWithChart
         );
         assert_eq!(back.camera, camera);
-        assert_eq!((back.extent, back.fade, back.fov), (3.25, 0.75, 0.0));
-        let old = line.replace(",fade=0.75", "");
-        assert_eq!(Snapshot::parse(&old).unwrap().fade, 0.0);
+        assert_eq!(back.fov, 0.0);
+        // Lines from when the extent and fade were settings still load.
+        assert!(Snapshot::parse(&line.replace(",fov=", ",extent=3,fade=1,fov=")).is_ok());
     }
 
     #[test]

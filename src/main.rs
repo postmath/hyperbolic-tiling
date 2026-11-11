@@ -173,10 +173,7 @@ impl Model {
             colors: tiling.quotient.orbit_size(),
             // As printed, without settling, so that it stays exactly the same.
             view: snapshot.map_or_else(|| View::new(tiling.geometry), |s| s.view),
-            camera: snapshot.map_or_else(
-                || Camera::new(tiling.geometry, Settings::default().extent),
-                |s| s.camera,
-            ),
+            camera: snapshot.map_or_else(|| Camera::new(tiling.geometry), |s| s.camera),
             cursor: None,
             modifiers: ModifiersState::empty(),
             drag: None,
@@ -201,7 +198,7 @@ impl Model {
     }
 
     fn reset_camera(&mut self) {
-        self.camera = Camera::new(self.tiling.geometry, self.settings.extent);
+        self.camera = Camera::new(self.tiling.geometry);
     }
 
     fn title(&self) -> String {
@@ -217,7 +214,7 @@ impl Model {
         // A view of one geometry means nothing in another.
         if tiling.geometry != self.tiling.geometry {
             self.view = View::new(tiling.geometry);
-            self.camera = Camera::new(tiling.geometry, self.settings.extent);
+            self.camera = Camera::new(tiling.geometry);
         }
         self.tiling = tiling;
         self.colors = tiling.quotient.orbit_size();
@@ -403,7 +400,7 @@ impl Model {
         let ray = self
             .camera
             .ray(pane.to_screen(pos), self.settings.fov.to_radians());
-        if let Some(x) = camera::hit(g, camera::cap(g, self.settings.extent), &ray) {
+        if let Some(x) = camera::hit(g, camera::cap(g, camera::EXTENT), &ray) {
             self.camera.target = x;
         }
     }
@@ -419,7 +416,7 @@ impl Model {
         let (d, mu) = (pane.to_screen(pos), self.settings.mu);
         let Some(_) = pane.chart else {
             let ray = self.camera.ray(d, self.settings.fov.to_radians());
-            let cap = camera::cap(g, self.settings.extent);
+            let cap = camera::cap(g, camera::EXTENT);
             return camera::probe(g, cap, mu, &ray).map(|x| (x, true));
         };
         let proj = self.projection();

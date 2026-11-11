@@ -48,12 +48,10 @@ A panel at the top left holds the main controls:
   space; each alone, or with the other in an inset at the bottom right.
   Four small pictures of these layouts pick one. The inset takes its own
   view's drags, and its buttons swap it with the main view or hide it.
-* **3D view settings:** the hyperboloid and the plane are cut off at the
-  **extent**, a distance from the centre, and fade out over the last
-  **edge fade** of it, so that they do not seem to end there; 0 gives a sharp
-  edge. The **field of view** runs from
-  orthographic, 0, to 120°; changing it keeps the size of the picture at the
-  camera's target. **Show the projection** draws how the disk projects the
+* **3D view settings:** the hyperboloid and the plane fade out between
+  distances 3 and 3.5 from the centre, so that they do not seem to end. The
+  **field of view** runs from orthographic, 0, to 120°; changing it keeps the
+  size of the picture at the camera's target. **Show the projection** draws how the disk projects the
   surface: the disk on the plane tangent at the centre, the point
   (-λ, 0, 0) projected from, and the line through the point under the
   pointer to its image.

@@ -15,6 +15,11 @@ pub const ZOOM_FOVS: [f64; 2] = [1.0, 120.0];
 /// The field of view to start with, in degrees, which `Camera::new` frames
 /// for.
 pub const DEFAULT_FOV: f64 = 45.0;
+/// How far from the origin the 3D view shows the hyperboloid or the plane,
+/// and over how much of that distance, at its end, they fade out (math
+/// §14.1).
+pub const EXTENT: f64 = 3.5;
+pub const FADE: f64 = 0.5;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
@@ -43,7 +48,7 @@ impl Camera {
     /// above, or the bowl from below, its side in full colour. Seen from the
     /// side opposite x2, so that from straight above the picture would be the
     /// disk's, with x1 right and x2 up.
-    pub fn new(g: Geometry, extent: f64) -> Self {
+    pub fn new(g: Geometry) -> Self {
         let azimuth = -90f64.to_radians();
         let above = |target, half_height| Self {
             target,
@@ -53,8 +58,8 @@ impl Camera {
         };
         match g {
             Geometry::Spherical => above(DVec3::ZERO, 1.2),
-            Geometry::Euclidean => above(ORIGIN, 1.2 * extent),
-            Geometry::Hyperbolic => Self::below_bowl(extent, azimuth),
+            Geometry::Euclidean => above(ORIGIN, 1.4 * EXTENT),
+            Geometry::Hyperbolic => Self::below_bowl(EXTENT),
         }
     }
 
@@ -64,7 +69,8 @@ impl Camera {
     /// the picture, for the elevation e; starting from there, the target moves
     /// along the axis to centre the picture, and the half height scales to
     /// fit it, until perspective agrees.
-    fn below_bowl(extent: f64, azimuth: f64) -> Self {
+    fn below_bowl(extent: f64) -> Self {
+        let azimuth = -90f64.to_radians();
         let elevation = -25f64.to_radians();
         let (sin, cos) = (elevation.abs().sin(), elevation.cos());
         let (rim_x0, rim_r) = (extent.cosh(), extent.sinh());
@@ -279,7 +285,7 @@ mod tests {
 
     #[test]
     fn basis_is_orthonormal_and_right_handed() {
-        let mut c = Camera::new(Geometry::Hyperbolic, 3.0);
+        let mut c = Camera::new(Geometry::Hyperbolic);
         for (az, el) in [(0.3, 0.2), (-2.0, 1.5), (4.0, -1.0)] {
             (c.azimuth, c.elevation) = (az, el);
             let [r, u, b] = c.basis();
@@ -297,7 +303,7 @@ mod tests {
     /// and x2 up, not mirrored.
     #[test]
     fn from_above_x1_is_right_and_x2_up() {
-        let mut c = Camera::new(Geometry::Hyperbolic, 3.0);
+        let mut c = Camera::new(Geometry::Hyperbolic);
         c.elevation = std::f64::consts::FRAC_PI_2;
         let [r, u, _] = c.basis();
         assert!((r - DVec3::Y).length() < 1e-12);
@@ -307,7 +313,7 @@ mod tests {
     #[test]
     fn centre_ray_hits_a_target_on_the_surface() {
         for g in [Geometry::Euclidean, Geometry::Hyperbolic] {
-            let mut c = Camera::new(g, 4.0);
+            let mut c = Camera::new(g);
             c.target = ORIGIN;
             for fov in FOVS {
                 let x = hit(g, cap(g, 4.0), &c.ray(DVec2::ZERO, fov)).unwrap();
@@ -321,8 +327,8 @@ mod tests {
     #[test]
     fn hits_are_shown_and_nearest() {
         for g in ALL {
-            let c = Camera::new(g, 3.0);
-            let cap = cap(g, 3.0);
+            let c = Camera::new(g);
+            let cap = cap(g, EXTENT);
             for fov in FOVS {
                 for d in [DVec2::new(0.1, 0.2), DVec2::new(-0.2, 0.3)] {
                     let ray = c.ray(d, fov);
@@ -343,7 +349,7 @@ mod tests {
     #[test]
     fn the_bowl_is_framed_from_below() {
         for extent in [1.0, 2.0, 3.0, 5.0] {
-            let c = Camera::new(Geometry::Hyperbolic, extent);
+            let c = Camera::below_bowl(extent);
             let fov = DEFAULT_FOV.to_radians();
             // Each circle's farthest point from the centre of the picture.
             let farthest = |x0: f64, r: f64| {
@@ -373,10 +379,10 @@ mod tests {
     #[test]
     fn project_inverts_ray() {
         let g = Geometry::Hyperbolic;
-        let c = Camera::new(g, 3.0);
+        let c = Camera::new(g);
         for fov in FOVS {
             let d = DVec2::new(0.3, 0.2);
-            let x = hit(g, cap(g, 3.0), &c.ray(d, fov)).unwrap();
+            let x = hit(g, cap(g, EXTENT), &c.ray(d, fov)).unwrap();
             assert!((c.project(x, fov) - d).length() < 1e-9, "{fov}");
         }
     }
@@ -386,7 +392,7 @@ mod tests {
     #[test]
     fn pan_holds_the_target_plane() {
         for fov in FOVS {
-            let mut c = Camera::new(Geometry::Hyperbolic, 3.0);
+            let mut c = Camera::new(Geometry::Hyperbolic);
             let (from, to) = (DVec2::new(0.2, 0.1), DVec2::new(-0.3, 0.5));
             let grabbed = c.ray(from, fov).origin;
             let before = c;
@@ -399,7 +405,7 @@ mod tests {
 
     #[test]
     fn orbit_keeps_the_target_and_clamps_the_elevation() {
-        let mut c = Camera::new(Geometry::Spherical, 3.0);
+        let mut c = Camera::new(Geometry::Spherical);
         let target = c.target;
         c.orbit(DVec2::new(10.0, 5.0));
         assert_eq!(c.target, target);
@@ -413,7 +419,7 @@ mod tests {
     /// and changes only the field of view.
     #[test]
     fn dolly_moves_the_eye_and_zoom_keeps_it() {
-        let mut c = Camera::new(Geometry::Hyperbolic, 3.0);
+        let mut c = Camera::new(Geometry::Hyperbolic);
         let fov = 45f64;
         let eye = |c: &Camera, fov: f64| c.target + c.eye_offset(fov.to_radians()).unwrap();
         let before = eye(&c, fov);
@@ -457,13 +463,13 @@ mod tests {
     #[test]
     fn the_probe_sees_the_plane_in_front_of_the_bowl() {
         let g = Geometry::Hyperbolic;
-        let mut c = Camera::new(g, 3.0);
+        let mut c = Camera::new(g);
         (c.target, c.half_height, c.elevation) = (ORIGIN, 1.0, -0.6);
         let ray = c.ray(DVec2::new(0.2, 0.1), 0.0);
-        let x = probe(g, cap(g, 3.0), 0.5, &ray).unwrap();
+        let x = probe(g, cap(g, EXTENT), 0.5, &ray).unwrap();
         let y = plane_image(g, x, 0.5);
         assert!((y - ray.origin).cross(ray.dir).length() < 1e-9);
-        assert!(hit(g, cap(g, 3.0), &ray).unwrap().x > 1.0);
+        assert!(hit(g, cap(g, EXTENT), &ray).unwrap().x > 1.0);
     }
 
     /// Looking across the bowl, a ray through its rim misses the near wall
@@ -471,7 +477,7 @@ mod tests {
     #[test]
     fn rays_pass_over_the_cut_rim() {
         let g = Geometry::Hyperbolic;
-        let mut c = Camera::new(g, 1.0);
+        let mut c = Camera::new(g);
         c.elevation = 0.1;
         c.target = DVec3::new(1.2, 0.0, 0.0);
         c.half_height = 1.0;
