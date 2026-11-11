@@ -24,6 +24,7 @@ src/quotient.rs  finite quotient mod ℓ for stable tile colors
 src/ui.rs        the egui control panel and the {p,q} lattice picker
 src/snapshot.rs  the exact view state as a line of text, printed and loaded
 index.html       the page trunk builds for the web version (§8)
+scripts/         favicons.sh renders the icons in icons/ from a view (§20)
 ```
 
 What happens per input event and per frame:
@@ -224,7 +225,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §21.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §22.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -723,7 +724,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§20) that is acceptable.
+thousand ALU operations per pixel (§21) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -951,7 +952,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §21.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §22.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1553,12 +1554,39 @@ window and writes it as a PNG, for icons and documentation.
 
 Check: the export of a {5,6} view matched a headless Chrome screenshot of its
 `#view=` URL away from the rim, where the GPU's f32 and SwiftShader's differ
-in the last pixels. Exports also make §21.3's throwaway build unnecessary for
+in the last pixels. Exports also make §22.3's throwaway build unnecessary for
 still pictures.
 
 ---
 
-## 20. Precision and performance notes
+## 20. Milestone 20: favicons
+
+Commit: *Add favicons rendered from a {5,6} view.*
+
+`scripts/favicons.sh` exports one view at 2048 px and cuts the icons in
+`icons/` from it with ImageMagick. The icons are committed rather than built
+in CI: GitHub's runners have no GPU, and the icons change only with the view.
+
+* **The view.** Lines would vanish at 16 px, so they are off, and the
+  picture relies on color changes for edges. The view is panned so the
+  central tile's color contrasts with its neighbours'; a plain {5,6} at the
+  origin has green next to green.
+* **Crops.** The small tiles near the rim become noise when scaled down, so
+  smaller icons keep less of the disk: 65% of the radius at 16 px, 80% at 32
+  and 48 px. Each is cut round with a transparent outside, and scaled from
+  the full render, which averages away the one-sample-per-pixel aliasing a
+  direct small export would have. The 180 px touch icon keeps the whole
+  square, background included, since iOS fills transparency with black.
+* **Page.** Trunk's `copy-dir` puts `icons/` in `dist/`. The `<link>`s are
+  relative, so they resolve under the `--public-url` prefix of the Pages
+  build.
+
+Check: the script reproduces the icons byte for byte, and `trunk build`
+puts them in `dist/icons/`.
+
+---
+
+## 21. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -1576,9 +1604,9 @@ still pictures.
 
 ---
 
-## 21. Workflow notes
+## 22. Workflow notes
 
-### 21.1 jj
+### 22.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -1597,13 +1625,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 21.2 Checks before each commit
+### 22.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 21.3 A throwaway verification build
+### 22.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -1613,7 +1641,7 @@ snapshot into a commit.
 
 ---
 
-## 22. Exercises and extensions
+## 23. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.
