@@ -1349,7 +1349,13 @@ a bowl with the asymptotic cone $x_0=r$ (slope 45°); the plane $x_0=1$; and the
 unit sphere. The bowl and the plane are infinite, so they are cut off at a
 distance `extent` from $O$: at $x_0\le\cosh(\text{extent})$ on the
 hyperboloid and at $x_1^2+x_2^2\le\text{extent}^2$ on the plane
-**(code: `camera::cap`)**. The sphere is shown whole.
+**(code: `camera::cap`)**. Over the last `fade` of that distance they turn
+transparent, from opaque at $r=\text{extent}-\text{fade}$ to clear at the
+extent, so that they do not seem to end there **(code: `opacity`)**. On
+the hyperboloid most of what is visible lies in that band: at extent 3 the
+last unit of distance spans the radii from $\sinh2\approx3.6$ to
+$\sinh3\approx10$. So the default fade is half a unit. The sphere is shown
+whole.
 
 The embedding is not an isometry for $\kappa=-1$. A tangent vector $v$ has
 Euclidean length$^2$ $v_0^2+v_1^2+v_2^2$ but hyperbolic length$^2$

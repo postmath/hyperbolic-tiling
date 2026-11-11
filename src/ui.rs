@@ -106,6 +106,9 @@ pub struct Settings {
     pub show_projection: bool,
     /// How far from the origin the 3D view shows the hyperboloid or plane.
     pub extent: f64,
+    /// Over how much of that distance, at its end, they fade out; 0 for a
+    /// sharp edge.
+    pub fade: f64,
     /// The 3D view's vertical field of view in degrees; 0 is orthographic.
     pub fov: f64,
     pub show_panel: bool,
@@ -124,6 +127,7 @@ impl Default for Settings {
             layout: Layout::Chart,
             show_projection: false,
             extent: 3.0,
+            fade: 0.5,
             fov: DEFAULT_FOV,
             show_panel: true,
             debug: false,
@@ -363,6 +367,11 @@ fn space(ui: &mut Ui, settings: &mut Settings, g: Geometry) {
     let space = settings.layout.has_space();
     ui.add_enabled_ui(space && g != Geometry::Spherical, |ui| {
         ui.add(Slider::new(&mut settings.extent, 1.0..=MAX_EXTENT).text("Extent"));
+        let fade = Slider::new(&mut settings.fade, 0.0..=settings.extent).text("Edge fade");
+        ui.add(fade).on_hover_text(
+            "How much of the extent, at its end, fades out, so that the surface \
+             does not seem to end there; 0 for a sharp edge",
+        );
     })
     .response
     .on_disabled_hover_text(if space {

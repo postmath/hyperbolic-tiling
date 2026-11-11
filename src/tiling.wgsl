@@ -15,8 +15,9 @@ struct U {
   color_frame: array<vec4<u32>, 3>,
   ell: vec4<u32>,
   // The 3D view (see camera.rs): the target, w = 1 for 3D; right and up,
-  // scaled to the pane, with w = the cap; and from the target to the eye,
-  // w = 1, or for an orthographic view back, w = 0.
+  // scaled to the pane, with w = the cap and the width of its fade; and
+  // from the target to the eye, w = 1, or for an orthographic view back,
+  // w = 0.
   cam_target: vec4<f32>,
   cam_right: vec4<f32>,
   cam_up: vec4<f32>,
@@ -193,6 +194,17 @@ fn coverage(f: f32, per_px: f32) -> f32 {
   return saturate(0.5 - f / max(per_px, 1e-30));
 }
 
+// How opaque the surface is at x: fading out over the last `cam_up.w` of
+// the distance from O to the cap, so that the surface does not seem to end
+// there; or with no fade, `cap_coverage` of a sharp edge.
+fn opacity(x: vec3<f32>, cut: f32) -> f32 {
+  let hyperbolic = u.proj.x < 0.0;
+  let r = select(length(x.yz), acosh(max(x.x, 1.0)), hyperbolic);
+  let extent = select(sqrt(u.cam_right.w), acosh(max(u.cam_right.w, 1.0)), hyperbolic);
+  let fade = 1.0 - smoothstep(extent - u.cam_up.w, extent, r);
+  return select(cap_coverage(cut), fade, u.cam_up.w > 0.0);
+}
+
 // `coverage` of the cap's edge by `past_cap`, but only near the cap. Near an
 // outline, the hit moves too far between pixels for its derivative to mean
 // anything, which would draw faint traces of the uncut surface's outline.
@@ -288,8 +300,8 @@ fn space(frag: vec2<f32>) -> vec3<f32> {
   // A convex sheet's silhouette has only the background behind it. Within
   // it, the front hit and, where the cap cuts that away, the hit behind.
   let in_silhouette = select(0.0, coverage(-clamp(disc, -1e6, 1e6), fwidth(disc)), has_front);
-  let cover_front = cap_coverage(cut_front);
-  let cover_back = select(0.0, cap_coverage(cut_back), has_back);
+  let cover_front = opacity(front, cut_front);
+  let cover_back = select(0.0, opacity(back, cut_back), has_back);
   // The chart's fade at its rim, which seen obliquely can be thinner than a
   // pixel, so the rim also gets a pixel's blend.
   let to_rim = rho2 * u.proj.z;

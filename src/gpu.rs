@@ -6,7 +6,7 @@ use winit::{event_loop::OwnedDisplayHandle, window::Window};
 
 use crate::{
     camera::{self, Camera, PLANE_RHO_MAX},
-    geom::{Chart, ORIGIN, Projection},
+    geom::{Chart, Geometry, ORIGIN, Projection},
     tiling::Tiling,
     ui::Settings,
     view::View,
@@ -41,7 +41,8 @@ pub struct Uniforms {
     pub cam_target: [f32; 4],
     /// xyz = right, scaled by `Camera::half_height`; w = `camera::cap`.
     pub cam_right: [f32; 4],
-    /// xyz = up, scaled likewise; w unused.
+    /// xyz = up, scaled likewise; w = the width of the fade at the cap's edge,
+    /// as a distance, or 0 for a sharp edge.
     pub cam_up: [f32; 4],
     /// xyz = from the target to the eye, w = 1; or orthographic, xyz = back, w = 0.
     pub cam_back: [f32; 4],
@@ -76,7 +77,12 @@ impl Uniforms {
             let cap = camera::cap(g, settings.extent).min(f32::MAX.into());
             cam_target = c.target.as_vec3().extend(1.0).to_array();
             cam_right = (h * right).extend(cap as f32).to_array();
-            cam_up = (h * up).extend(0.0).to_array();
+            let fade = if g == Geometry::Spherical {
+                0.0
+            } else {
+                settings.fade
+            };
+            cam_up = (h * up).extend(fade as f32).to_array();
             cam_back = match c.eye_offset(fov) {
                 Some(offset) => offset.as_vec3().extend(1.0),
                 None => back.extend(0.0),

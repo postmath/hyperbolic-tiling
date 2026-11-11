@@ -227,7 +227,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §29.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §30.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -726,7 +726,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§28) that is acceptable.
+thousand ALU operations per pixel (§29) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -954,7 +954,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §29.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §30.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1556,7 +1556,7 @@ window and writes it as a PNG, for icons and documentation.
 
 Check: the export of a {5,6} view matched a headless Chrome screenshot of its
 `#view=` URL away from the rim, where the GPU's f32 and SwiftShader's differ
-in the last pixels. Exports also make §29.3's throwaway build unnecessary for
+in the last pixels. Exports also make §30.3's throwaway build unnecessary for
 still pictures.
 
 ---
@@ -1947,7 +1947,32 @@ did, so it looks like the headless browser's timing rather than the app.
 
 ---
 
-## 28. Precision and performance notes
+## 28. Milestone 28: fading out the edge
+
+Commit: *Fade out the 3D view's edge.* The mathematics is in math §14.1.
+
+The bowl and the plane end at the extent, which a sharp edge makes look
+like the end of the surface. They now turn transparent over the last
+**Edge fade** of the extent, a new slider under it, 0.5 by default; 0 keeps
+the sharp edge. The sphere has no edge, and no fade.
+
+* **Shader.** `opacity` replaces `cap_coverage` as each hit's coverage when
+  the fade is on: one minus a smoothstep in the distance $r$ from $O$,
+  $\operatorname{arcosh}x_0$ on the hyperboloid and $|\mathbf x|$ on the plane, from
+  `extent - fade` to `extent`. The layers of §24 do the rest: where the
+  front hit is partly clear, the hit behind it and then the background
+  show through. The fade's width rides in `cam_up.w`, which was unused.
+* **The width.** Renders at extent 3 with fades of 0.5, 1 and 1.5 chose the
+  default. On the hyperboloid the last unit of distance holds most of the
+  visible bowl, so a fade of 1 dimmed most of it, and from below the greyed
+  inside of the far wall showed through. Half a unit reads as a surface that
+  goes on.
+* **View line.** `fade=` joins the 3D fields. Lines without it, from before,
+  load with a sharp edge, so that they still reproduce their picture.
+
+---
+
+## 29. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -1965,9 +1990,9 @@ did, so it looks like the headless browser's timing rather than the app.
 
 ---
 
-## 29. Workflow notes
+## 30. Workflow notes
 
-### 29.1 jj
+### 30.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -1986,13 +2011,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 29.2 Checks before each commit
+### 30.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 29.3 A throwaway verification build
+### 30.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -2002,7 +2027,7 @@ snapshot into a commit.
 
 ---
 
-## 30. Exercises and extensions
+## 31. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.

@@ -35,6 +35,7 @@ pub struct Snapshot {
     pub show_projection: bool,
     pub camera: Camera,
     pub extent: f64,
+    pub fade: f64,
     pub fov: f64,
     /// Window size in physical pixels; it sets the scale.
     pub size: [u32; 2],
@@ -60,6 +61,7 @@ impl Snapshot {
             show_projection: settings.show_projection,
             camera: *camera,
             extent: settings.extent,
+            fade: settings.fade,
             fov: settings.fov,
             size,
         }
@@ -76,6 +78,7 @@ impl Snapshot {
             layout: self.layout,
             show_projection: self.show_projection,
             extent: self.extent,
+            fade: self.fade,
             fov: self.fov,
             ..base
         }
@@ -159,6 +162,8 @@ impl Snapshot {
                 }
             },
             extent,
+            // Lines from before the fade have a sharp edge.
+            fade: get("fade").map_or(Ok(0.0), |_| number("fade"))?,
             fov: get("fov").map_or(Ok(Settings::default().fov), |_| number("fov"))?,
             size,
         })
@@ -195,8 +200,8 @@ impl fmt::Display for Snapshot {
             let (t, az, el, h) = (c.target, c.azimuth, c.elevation, c.half_height);
             write!(
                 f,
-                ",d3=1,cam={}:{}:{}:{az}:{el}:{h},extent={},fov={}",
-                t.x, t.y, t.z, self.extent, self.fov
+                ",d3=1,cam={}:{}:{}:{az}:{el}:{h},extent={},fade={},fov={}",
+                t.x, t.y, t.z, self.extent, self.fade, self.fov
             )?;
             if !self.layout.space_main() {
                 write!(f, ",swap=1")?;
@@ -325,6 +330,7 @@ mod tests {
             layout: Layout::ChartWithSpace,
             show_projection: true,
             extent: 3.25,
+            fade: 0.75,
             fov: 0.0,
             ..Settings::default()
         };
@@ -350,7 +356,9 @@ mod tests {
             Layout::SpaceWithChart
         );
         assert_eq!(back.camera, camera);
-        assert_eq!((back.extent, back.fov), (3.25, 0.0));
+        assert_eq!((back.extent, back.fade, back.fov), (3.25, 0.75, 0.0));
+        let old = line.replace(",fade=0.75", "");
+        assert_eq!(Snapshot::parse(&old).unwrap().fade, 0.0);
     }
 
     #[test]
