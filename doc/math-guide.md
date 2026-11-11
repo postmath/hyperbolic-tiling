@@ -1417,6 +1417,14 @@ is $|(c\cdot p_x,\ c\cdot p_y)|$. That is the pixel size across that line, and
 the edge VE and the vertex dot each use their own. Lines then keep their
 width in pixels in every direction, as in the charts.
 
+The edges of the surface itself are blended the same way. For a function
+$f$ that is negative on the shown side of an edge, $f/|\nabla f|$ in pixels
+is the distance to the edge, and $\tfrac12-f/|\nabla f|$, clamped to
+$[0,1]$, the share of the pixel on the shown side **(code: `coverage`)**. For
+the cap, $f$ is $x_0-\cosh e$ at the front hit, or $x_1^2+x_2^2-e^2$, and the
+part cut away shows the hit behind. For the outline, $f$ is minus the
+discriminant $b^2-ac$, which vanishes where the ray touches the surface.
+
 ### 14.5 Moving the camera
 
 The camera has five degrees of freedom, those of a camera that does not

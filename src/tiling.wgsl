@@ -145,52 +145,35 @@ fn qform(a: vec3<f32>, b: vec3<f32>) -> f32 {
   return a.x * b.x + u.proj.x * (a.y * b.y + a.z * b.z);
 }
 
-// Whether x on the surface is shown: on the upper sheet or the plane, and
-// within the cap, x0 <= cap for κ < 0 and x1² + x2² <= cap otherwise.
-fn shown(x: vec3<f32>) -> bool {
-  let far = select(dot(x.yz, x.yz), x.x, u.proj.x < 0.0);
-  return (u.proj.x > 0.0 || x.x > 0.0) && far <= u.cam_right.w;
+// Whether x on the surface lies on the upper sheet, or the plane; the
+// sphere's points all do.
+fn on_sheet(x: vec3<f32>) -> bool {
+  return u.proj.x > 0.0 || x.x > 0.0;
 }
 
-// The 3D view: the first shown point of the surface along the pixel's ray,
-// as in camera::hit, shaded and lit. No branch may depend on the pixel
-// before the derivatives below.
-fn space(frag: vec2<f32>) -> vec3<f32> {
-  let uv = screen_uv(frag);
-  let o = u.cam_target.xyz + uv.x * u.cam_right.xyz + uv.y * u.cam_up.xyz;
-  let perspective = u.cam_back.w == 1.0;
-  let from_eye = o - (u.cam_target.xyz + u.cam_back.xyz);
-  let dir = select(-u.cam_back.xyz, normalize(from_eye), perspective);
-  let t_min = select(-3.0e38, -length(from_eye), perspective);
-  // a t² + 2b t + c = 0, with roots s/a and c/s; guarded divisions keep
-  // inf and NaN, which WGSL leaves undefined, out of reach.
-  let a = qform(dir, dir);
-  let b = qform(o, dir);
-  let c = qform(o, o) - 1.0;
-  let disc = b * b - a * c;
-  let sq = sqrt(max(disc, 0.0));
-  let s = -(b + select(-sq, sq, b >= 0.0));
-  let r1 = select(3.0e38, s / select(1.0, a, a != 0.0), a != 0.0);
-  let r2 = select(3.0e38, c / select(1.0, s, s != 0.0), s != 0.0);
-  let lo = min(r1, r2);
-  let hi = max(r1, r2);
-  let ok_lo = lo > t_min && lo < 1.0e30 && shown(o + lo * dir);
-  let ok_hi = hi > t_min && hi < 1.0e30 && shown(o + hi * dir);
-  let ok = disc >= 0.0 && (ok_lo || ok_hi);
-  // Back onto the surface, which rounding has left.
-  let x = o + select(hi, lo, ok_lo) * dir;
-  let p = select(u.cam_target.xyz, x / sqrt(max(qform(x, x), 1e-30)), ok);
-  // The pixel's sides on the surface; the geometric mean of their lengths is
-  // the pixel size. Where a neighbour misses they are large, and lines fade.
-  let dx = dpdx(p);
-  let dy = dpdy(p);
-  let px = sqrt(sqrt(max(dot(dx, normal(dx)), 0.0) * max(dot(dy, normal(dy)), 0.0))) + 1e-7;
-  if (!ok) { return background(); }
+// How far x on the surface lies past the cap: x0 - cap for κ < 0, else
+// x1² + x2² - cap. Clamped, so that it divides by a tiny pixel size without
+// overflowing, keeping its sign.
+fn past_cap(x: vec3<f32>) -> f32 {
+  let far = select(dot(x.yz, x.yz), x.x, u.proj.x < 0.0);
+  return clamp(far - u.cam_right.w, -1e6, 1e6);
+}
 
+// The fraction of a pixel on the side of an edge where f < 0, for f with
+// that change per pixel.
+fn coverage(f: f32, per_px: f32) -> f32 {
+  return saturate(0.5 - f / max(per_px, 1e-30));
+}
+
+// The color of the surface at p seen along `dir`, for a pixel with sides
+// dx, dy on the surface, lit. Their lengths' geometric mean is the pixel
+// size; where a neighbour lies elsewhere they are large, and lines fade.
+// The Euclidean normal faces the eye. The side where Q > 1, inside the bowl,
+// above the plane, outside the sphere, is the top; the other is dimmed and
+// greyed so that the two cannot be confused.
+fn lit(p: vec3<f32>, dir: vec3<f32>, dx: vec3<f32>, dy: vec3<f32>) -> vec3<f32> {
+  let px = sqrt(sqrt(max(dot(dx, normal(dx)), 0.0) * max(dot(dy, normal(dy)), 0.0))) + 1e-7;
   let shaded = shade(p, px, dx, dy);
-  // The Euclidean normal, facing the eye. The side where Q > 1, inside the
-  // bowl, above the plane, outside the sphere, is the top; the other is
-  // dimmed and greyed so that the two cannot be confused.
   var n = normalize(vec3<f32>(p.x, u.proj.x * p.yz));
   let top = dot(n, dir) < 0.0;
   n = select(-n, n, top);
@@ -201,6 +184,60 @@ fn space(frag: vec2<f32>) -> vec3<f32> {
     col = 0.85 * mix(col, vec3<f32>(dot(col, vec3<f32>(0.3, 0.6, 0.1))), 0.6);
   }
   return mix(col, background(), shaded.a);
+}
+
+// The 3D view: the surface along the pixel's ray, as in camera::hit at the
+// pixel's centre. Its edges, where the cap cuts it and where the ray grazes
+// it, are anti-aliased with their distances in pixels, from derivatives. So
+// no branch may depend on the pixel before those.
+fn space(frag: vec2<f32>) -> vec3<f32> {
+  let uv = screen_uv(frag);
+  let o = u.cam_target.xyz + uv.x * u.cam_right.xyz + uv.y * u.cam_up.xyz;
+  let perspective = u.cam_back.w == 1.0;
+  let from_eye = o - (u.cam_target.xyz + u.cam_back.xyz);
+  let dir = select(-u.cam_back.xyz, normalize(from_eye), perspective);
+  let t_min = select(-3.0e38, -length(from_eye), perspective);
+  // a t² + 2b t + c = 0, with roots s/a and c/s; guarded divisions keep
+  // inf and NaN, which WGSL leaves undefined, out of reach. Just past the
+  // silhouette, disc < 0, and both roots are where the ray passes closest.
+  let a = qform(dir, dir);
+  let b = qform(o, dir);
+  let c = qform(o, o) - 1.0;
+  let disc = b * b - a * c;
+  let sq = sqrt(max(disc, 0.0));
+  let s = -(b + select(-sq, sq, b >= 0.0));
+  let r1 = select(3.0e38, s / select(1.0, a, a != 0.0), a != 0.0);
+  let r2 = select(3.0e38, c / select(1.0, s, s != 0.0), s != 0.0);
+  let lo = min(r1, r2);
+  let hi = max(r1, r2);
+  let ok_lo = lo > t_min && lo < 1.0e30 && on_sheet(o + lo * dir);
+  let ok_hi = hi > t_min && hi < 1.0e30 && on_sheet(o + hi * dir);
+  // The front hit whether or not the cap shows it, and the one behind it,
+  // seen through where the cap cuts the front away. Both back onto the
+  // surface, which rounding has left. Where they are missing they are still
+  // set where they would be, if finite, so that the derivatives across an
+  // edge stay small.
+  let has_front = ok_lo || ok_hi;
+  let has_back = ok_lo && ok_hi && disc > 0.0;
+  let xf = o + select(hi, lo, ok_lo) * dir;
+  let xb = o + hi * dir;
+  let front = select(o, xf / sqrt(max(qform(xf, xf), 1e-30)), select(hi, lo, ok_lo) < 1.0e30);
+  let back = select(o, xb / sqrt(max(qform(xb, xb), 1e-30)), hi < 1.0e30);
+  let dfx = dpdx(front);
+  let dfy = dpdy(front);
+  let dbx = dpdx(back);
+  let dby = dpdy(back);
+  let cut_front = past_cap(front);
+  let cut_back = past_cap(back);
+  // A convex sheet's silhouette has only the background behind it.
+  let in_silhouette = select(0.0, coverage(-clamp(disc, -1e6, 1e6), fwidth(disc)), has_front);
+  let w_front = in_silhouette * coverage(cut_front, fwidth(cut_front));
+  let w_back = select(0.0, (in_silhouette - w_front) * coverage(cut_back, fwidth(cut_back)), has_back);
+
+  var col = background() * (1.0 - w_front - w_back);
+  if (w_front > 0.0) { col += w_front * lit(front, dir, dfx, dfy); }
+  if (w_back > 0.0) { col += w_back * lit(back, dir, dbx, dby); }
+  return col;
 }
 
 // The length across a line of covector c, per pixel, from the pixel's sides

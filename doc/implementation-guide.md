@@ -227,7 +227,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §25.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §26.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -726,7 +726,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§24) that is acceptable.
+thousand ALU operations per pixel (§25) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -954,7 +954,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §25.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §26.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1556,7 +1556,7 @@ window and writes it as a PNG, for icons and documentation.
 
 Check: the export of a {5,6} view matched a headless Chrome screenshot of its
 `#view=` URL away from the rim, where the GPU's f32 and SwiftShader's differ
-in the last pixels. Exports also make §25.3's throwaway build unnecessary for
+in the last pixels. Exports also make §26.3's throwaway build unnecessary for
 still pictures.
 
 ---
@@ -1791,7 +1791,48 @@ spot and released, which took longer than egui's 0.8 s limit for a click.
 
 ---
 
-## 24. Precision and performance notes
+## 24. Milestone 24: smooth edges in 3D
+
+Commit: *Anti-alias the 3D view's edges.*
+
+The cut rim of the bowl and the plane, and the outline of the sphere and the
+bowl, were hard edges: each pixel took one ray, which hit or missed. In the
+small inset they were visibly stair-stepped. Each is now blended over a
+pixel, using its distance in pixels, which derivatives give (math §14.4):
+
+* **The cap.** `past_cap` is $x_0-\cosh e$, or $x_1^2+x_2^2-e^2$ on the
+  plane, at the front hit, now taken whether or not the cap shows it. With
+  `fwidth`, `coverage` turns it into the fraction of the pixel that the cap
+  keeps. What the cap cuts away shows the hit behind it, the far wall,
+  which gets its own coverage for its own rim, or the background.
+* **The outline.** Where a ray grazes the surface the discriminant of the
+  quadratic crosses zero, roughly linearly across the screen. Its coverage
+  blends the front with the background, since both sheets are convex and
+  nothing else lies behind their outline. Just outside the outline both
+  roots are the point of closest approach, which is shaded there.
+
+So a pixel on an edge is shaded twice, once for the front and once behind
+it, and every other pixel once. The two `lit` calls sit behind branches on
+their weights.
+
+The first version left faint specks a few pixels outside the bowl's tips.
+Where a hit was missing, its point had been set to the ray's origin, so it
+jumped between neighbouring pixels, and `fwidth` of its distance to the cap
+became large enough to give a partial coverage of about one half. Keeping
+the points where they would be, as long as they are finite, fixed that.
+What remains is very faint, right at the tips, where the cap meets the
+outline. There the hit moves like a square root of the distance from the
+outline, so the derivative overstates how fast it changes.
+
+Check: exports before and after differed only at the edges, 0.6% of the
+pixels of a 600 × 450 view of the bowl. Small exports magnified 3× showed
+smooth rims on the bowl and plane, a smooth outline on the sphere and on
+the bowl seen from below, and the near rim blending into the far wall
+without a dark fringe.
+
+---
+
+## 25. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -1809,9 +1850,9 @@ spot and released, which took longer than egui's 0.8 s limit for a click.
 
 ---
 
-## 25. Workflow notes
+## 26. Workflow notes
 
-### 25.1 jj
+### 26.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -1830,13 +1871,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 25.2 Checks before each commit
+### 26.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 25.3 A throwaway verification build
+### 26.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -1846,7 +1887,7 @@ snapshot into a commit.
 
 ---
 
-## 26. Exercises and extensions
+## 27. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.
@@ -1894,9 +1935,6 @@ snapshot into a commit.
     pointer's hit to its image, so that moving λ shows Klein, Poincaré and
     Gans as geometry. The shader then needs a second surface, the plane, and
     whichever of the two hits is nearer.
-14. **A smooth cap.** The rim of the cut bowl is aliased. Fade it over a
-    pixel. Where the far wall shows behind the rim, a fade to the background
-    is wrong: shade both hits and blend them.
 
 ---
 
