@@ -160,6 +160,49 @@ fn shown(g: Geometry, cap: f64, x: DVec3) -> bool {
     (k > 0.0 || x.x > 0.0) && far <= cap
 }
 
+/// The largest disk radius |u| that the picture on the projection plane
+/// shows where the chart has no rim, as the shader's `projection.y`, squared.
+pub const PLANE_RHO_MAX: f64 = 1.5;
+
+/// The point projected from, (-λ, 0, 0) for λ = μ/(1-μ); none for λ = ∞,
+/// a parallel projection (math §14.6). As the shader's.
+#[cfg(test)]
+pub fn projection_point(mu: f64) -> Option<DVec3> {
+    (mu < 1.0).then(|| DVec3::new(-mu / (1.0 - mu), 0.0, 0.0))
+}
+
+/// Where the projection takes x: on the plane x0 = 1, tangent at the
+/// origin, at twice its disk position. As the shader's.
+#[cfg(test)]
+pub fn plane_image(g: Geometry, x: DVec3, mu: f64) -> DVec3 {
+    let u = 2.0 * g.point_to_disk(x, mu);
+    DVec3::new(1.0, u.x, u.y)
+}
+
+/// The point of the surface that the picture on the projection plane shows
+/// where `ray` meets it, and that meeting's t, if the picture is there:
+/// inside the rim's fade, as `View::pannable`, and inside `PLANE_RHO_MAX`.
+fn plane_hit(g: Geometry, mu: f64, ray: &Ray) -> Option<(f64, DVec3)> {
+    let t = (1.0 - ray.origin.x) / ray.dir.x;
+    let y = ray.origin + t * ray.dir;
+    let u = 0.5 * DVec2::new(y.y, y.z);
+    let rho2 = u.length_squared();
+    let shown = rho2 <= 0.98 * g.rim2(mu) && rho2 <= PLANE_RHO_MAX * PLANE_RHO_MAX;
+    (t.is_finite() && t > ray.t_min && shown).then(|| (t, g.disk_to_point(u, mu)))
+}
+
+/// The point that the pointer's `ray` shows: on the surface, or seen in the
+/// picture on the projection plane if that is nearer.
+pub fn probe(g: Geometry, cap: f64, mu: f64, ray: &Ray) -> Option<DVec3> {
+    let on_surface = hit(g, cap, ray).map(|x| ((x - ray.origin).dot(ray.dir), x));
+    let on_plane = plane_hit(g, mu, ray);
+    let nearer = match (on_surface, on_plane) {
+        (Some(s), Some(p)) => Some(if p.0 < s.0 { p } else { s }),
+        (s, p) => s.or(p),
+    };
+    nearer.map(|(_, x)| x)
+}
+
 /// The first shown point of the surface along `ray`, as the shader finds it.
 pub fn hit(g: Geometry, cap: f64, ray: &Ray) -> Option<DVec3> {
     // Q(x) = x0² + κ(x1² + x2²) = 1, as a t² + 2b t + c = 0.
@@ -314,6 +357,38 @@ mod tests {
         let (h, mut ortho) = (c.half_height, 0.0);
         c.zoom(0.5, &mut ortho);
         assert_eq!((ortho, c.half_height), (0.0, 0.5 * h));
+    }
+
+    /// The projection point, a point and its image on the plane lie on one
+    /// line, and the image is the disk position scaled by 2.
+    #[test]
+    fn the_projection_line_passes_through_the_point_and_its_image() {
+        for g in [Geometry::Hyperbolic, Geometry::Spherical] {
+            for mu in [0.0, 0.3, 0.5, 0.8, 1.0] {
+                let x = g.disk_to_point(DVec2::new(0.1, -0.2), mu);
+                let y = plane_image(g, x, mu);
+                let along = match projection_point(mu) {
+                    Some(p) => (x - p).cross(y - p),
+                    None => (x - y).cross(DVec3::X),
+                };
+                assert!(along.length() < 1e-12, "{g:?} {mu}");
+                assert_eq!(y.x, 1.0);
+            }
+        }
+    }
+
+    /// From below, the probe finds the picture on the plane before the bowl,
+    /// and the point of the bowl that it shows.
+    #[test]
+    fn the_probe_sees_the_plane_in_front_of_the_bowl() {
+        let g = Geometry::Hyperbolic;
+        let mut c = Camera::new(g, 3.0);
+        (c.target, c.half_height, c.elevation) = (ORIGIN, 1.0, -0.6);
+        let ray = c.ray(DVec2::new(0.2, 0.1), 0.0);
+        let x = probe(g, cap(g, 3.0), 0.5, &ray).unwrap();
+        let y = plane_image(g, x, 0.5);
+        assert!((y - ray.origin).cross(ray.dir).length() < 1e-9);
+        assert!(hit(g, cap(g, 3.0), &ray).unwrap().x > 1.0);
     }
 
     /// Looking across the bowl, a ray through its rim misses the near wall

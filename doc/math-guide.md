@@ -1451,7 +1451,39 @@ reaches all of them.
 Parametrizing by $h$ rather than by the eye's distance is what makes the
 orthographic camera a limit rather than a special case.
 
-### 14.6 In the code
+### 14.6 The projection, shown
+
+The disk of §10.7 is a projection from $P=(-\lambda,0,0)$, and the 3D view
+can show it as one. Put the picture on the plane $x_0=1$, tangent to the
+surface at $O$. The line from $P$ through $x$ meets it at
+$$y=P+\frac{1+\lambda}{x_0+\lambda}(x-P),\qquad
+\mathbf y=\frac{(1+\lambda)\,\mathbf x}{x_0+\lambda}=\frac{\mathbf x}{a\,x_0+b}=2\mathbf u,$$
+with $a=1-\mu$, $b=\mu$ as before. So on this plane the picture is the disk
+itself at twice its scale, for every λ. That is the reason for §10.7's
+scaling "to agree with Poincaré's at the centre": it is the tangent plane's.
+On the textbook plane $x_0=0$ the picture would shrink to a point at Klein.
+
+The plane lies below the bowl, touching it at $O$, and above the sphere.
+Klein's disk has radius 1 there, Poincaré's 2, and Gans' fills the plane; on
+the sphere the orthographic disk is exactly as wide as the sphere. For
+λ = ∞ the lines are parallel, vertical, and there is no point $P$ to draw.
+
+**In the code.** The shader draws the picture as a third layer, the plane,
+with its point at $\mathbf y$ found by `disk_point` from $\mathbf u=\mathbf y/2$ and
+shaded like the chart's, out to the chart's rim or $|\mathbf u|=1.5$ where there
+is none. The three layers, front hit, the hit behind it and the plane,
+share each pixel by depth: each covers what it covers of the pixel, less
+what the nearer ones cover. Then come $P$, and for the point under the
+pointer the segment from $P$ through $y$ and $x$, with dots at both; each is
+drawn by its distance in pixels from the pixel's ray, and a quarter as
+strong where a layer hides it. The point under the pointer is found on the
+CPU, on the surface or in the picture on the plane, whichever is nearer
+(`camera::probe`), or in the 2D disk; one found in 3D is also marked in the
+disk (test: `the_probe_sees_the_plane_in_front_of_the_bowl`, and
+`the_projection_line_passes_through_the_point_and_its_image` for the
+formula above).
+
+### 14.7 In the code
 
 * `camera::Camera` holds $T$, the azimuth and elevation of $B$, and $h$. The
   field of view and the extent are settings, like λ.
@@ -1476,6 +1508,10 @@ orthographic camera a limit rather than a special case.
    Where does a circle about the axis at distance $r$ appear?
 3. At what elevation does an orthographic camera first see $O$ over the
    near wall of a bowl cut at $x_0\le\cosh e$?
+4. With the projection shown, set λ = 1 and look from below. The line from
+   $P$ through a point of a geodesic sweeps a plane through $P$ as the point
+   moves. Show that it meets the plane $x_0=1$ in a circle or a line, which
+   is why Poincaré's geodesics are arcs.
 
 ---
 

@@ -21,6 +21,11 @@ struct U {
   cam_right: vec4<f32>,
   cam_up: vec4<f32>,
   cam_back: vec4<f32>,
+  // The projection in 3D (math §14.6): x = 1 if shown, y = the largest |u|²
+  // of the picture on the plane, z = 1 if the probe is shown, w = 1 if a
+  // chart marks it; and the probe, a point of the surface.
+  projection: vec4<f32>,
+  probe: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: U;
 
@@ -120,16 +125,13 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     }
   } else {
     rim = dot(uv, uv) * u.proj.z;
-    // Inverse projection, as in Geometry::disk_to_point.
+    p = disk_point(uv);
     let a = 1.0 - u.proj.y;
     let b = u.proj.y;
-    let ks = u.proj.x * 4.0 * dot(uv, uv);
-    let x0 = (sqrt(max(1.0 + ks * (a*a - b*b), 0.0)) - ks * a * b) / (1.0 + ks * a * a);
-    let g = a * x0 + b;
-    p = vec3<f32>(x0, 2.0 * g * uv);
+    let g = a * p.x + b;
     // 2g tangentially, 2g²/(a + b x0) radially, equal only for the conformal
     // μ = 1/2.
-    len = 2.0 * g * max(1.0, g / (a + b * x0));
+    len = 2.0 * g * max(1.0, g / (a + b * p.x));
   }
   if (rim > 0.999) { return vec4<f32>(bg, 1.0); }
   // The pixel size, analytic: fwidth needs uniform control flow, which the
@@ -137,8 +139,34 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   let shaded = shade(p, len / u.screen.z, vec3<f32>(0.0), vec3<f32>(0.0));
   // Fade at the rim: f32 gives out at the hyperbolic one, and the sphere's
   // horizon would otherwise be a hard edge.
-  return vec4<f32>(mix(shaded.rgb, bg, max(smoothstep(0.98, 0.999, rim), shaded.a)), 1.0);
+  var col = mix(shaded.rgb, bg, max(smoothstep(0.98, 0.999, rim), shaded.a));
+  // The probe from the 3D view, which only the disk shows.
+  if (u.projection.w == 1.0) {
+    let d = length(uv - disk_of(u.probe.xyz)) * u.screen.z;
+    col = mix(col, vec3<f32>(0.0), saturate(5.5 - d));
+    col = mix(col, probe_color(), saturate(4.5 - d));
+  }
+  return vec4<f32>(col, 1.0);
 }
+
+// The point at disk position d: the inverse of the projection, as in
+// Geometry::disk_to_point.
+fn disk_point(d: vec2<f32>) -> vec3<f32> {
+  let a = 1.0 - u.proj.y;
+  let b = u.proj.y;
+  let ks = u.proj.x * 4.0 * dot(d, d);
+  let x0 = (sqrt(max(1.0 + ks * (a*a - b*b), 0.0)) - ks * a * b) / (1.0 + ks * a * a);
+  return vec3<f32>(x0, 2.0 * (a * x0 + b) * d);
+}
+
+// The disk position of x, as in Geometry::point_to_disk.
+fn disk_of(x: vec3<f32>) -> vec2<f32> {
+  return x.yz / (2.0 * ((1.0 - u.proj.y) * x.x + u.proj.y));
+}
+
+// Functions, since vector consts at module scope crash RADV (see background).
+fn probe_color() -> vec3<f32> { return vec3<f32>(1.0, 0.85, 0.4); }
+fn projector_color() -> vec3<f32> { return vec3<f32>(1.0, 0.4, 0.25); }
 
 // Q(a, b) = a0 b0 + κ(a1 b1 + a2 b2); the surface is Q(x, x) = 1.
 fn qform(a: vec3<f32>, b: vec3<f32>) -> f32 {
@@ -229,15 +257,106 @@ fn space(frag: vec2<f32>) -> vec3<f32> {
   let dby = dpdy(back);
   let cut_front = past_cap(front);
   let cut_back = past_cap(back);
-  // A convex sheet's silhouette has only the background behind it.
-  let in_silhouette = select(0.0, coverage(-clamp(disc, -1e6, 1e6), fwidth(disc)), has_front);
-  let w_front = in_silhouette * coverage(cut_front, fwidth(cut_front));
-  let w_back = select(0.0, (in_silhouette - w_front) * coverage(cut_back, fwidth(cut_back)), has_back);
+  // The picture on the projection plane x0 = 1, where the surface's point at
+  // disk position v appears at 2v (math §14.6). It ends where the chart's
+  // picture fades out at its rim, or at the largest |v|. Kept continuous
+  // like the hits.
+  let t_plane = (1.0 - o.x) / select(1.0, dir.x, dir.x != 0.0);
+  let on_plane = dir.x != 0.0 && abs(t_plane) < 1.0e30;
+  let v = 0.5 * (o + select(0.0, t_plane, on_plane) * dir).yz;
+  let rho2 = dot(v, v);
+  let pictured = disk_point(v);
+  let dpx = dpdx(pictured);
+  let dpy = dpdy(pictured);
+  // Toward the plane's horizon rho2 changes without bound from pixel to
+  // pixel, which would blur the edge over the whole horizon, so only pixels
+  // near the edge are blended.
+  let plane_edge = select(0.0, coverage(rho2 - u.projection.y, fwidth(rho2)),
+    rho2 < 2.0 * u.projection.y);
 
-  var col = background() * (1.0 - w_front - w_back);
+  // A convex sheet's silhouette has only the background behind it. Within
+  // it, the front hit and, where the cap cuts that away, the hit behind.
+  let in_silhouette = select(0.0, coverage(-clamp(disc, -1e6, 1e6), fwidth(disc)), has_front);
+  let cover_front = coverage(cut_front, fwidth(cut_front));
+  let cover_back = select(0.0, coverage(cut_back, fwidth(cut_back)), has_back);
+  // The chart's fade at its rim, which seen obliquely can be thinner than a
+  // pixel, so the rim also gets a pixel's blend.
+  let to_rim = rho2 * u.proj.z;
+  let rim_edge = select(0.0, coverage(to_rim - 0.995, fwidth(to_rim)), to_rim < 2.0);
+  let fade = (1.0 - smoothstep(0.98, 0.999, to_rim)) * rim_edge;
+  let shows_plane = u.projection.x == 1.0 && on_plane && t_plane > t_min;
+  let cover_plane = select(0.0, fade * plane_edge, shows_plane);
+  // Each layer's share of the pixel, less what nearer layers cover.
+  let t_front = select(hi, lo, ok_lo);
+  let w_front = in_silhouette * cover_front * (1.0 - select(0.0, cover_plane, t_plane < t_front));
+  let w_back = in_silhouette * (1.0 - cover_front) * cover_back
+    * (1.0 - select(0.0, cover_plane, t_plane < hi));
+  let w_plane = cover_plane * (1.0 - select(0.0, in_silhouette * cover_front, t_front < t_plane)
+    - select(0.0, in_silhouette * (1.0 - cover_front) * cover_back, hi < t_plane));
+
+  var col = background() * (1.0 - w_front - w_back - w_plane);
   if (w_front > 0.0) { col += w_front * lit(front, dir, dfx, dfy); }
   if (w_back > 0.0) { col += w_back * lit(back, dir, dbx, dby); }
+  if (w_plane > 0.0) {
+    let px = sqrt(sqrt(max(dot(dpx, normal(dpx)), 0.0) * max(dot(dpy, normal(dpy)), 0.0))) + 1e-7;
+    let shaded = shade(pictured, px, dpx, dpy);
+    col += w_plane * mix(shaded.rgb, background(), shaded.a);
+  }
+  if (u.projection.x != 1.0) { return col; }
+
+  // The point projected from, and the line from it through the probe and
+  // its image to whichever is farther. For λ = ∞ the projection is
+  // parallel, and the line starts a little below both. What a layer hides
+  // shows faintly through it.
+  let mu = u.proj.y;
+  let finite = mu < 1.0;
+  let projector = vec3<f32>(-mu / select(1.0, 1.0 - mu, finite), 0.0, 0.0);
+  let x = u.probe.xyz;
+  let image = vec3<f32>(1.0, 2.0 * disk_of(x));
+  let start = select(vec3<f32>(min(x.x, 1.0) - 1.5, x.yz), projector, finite);
+  let end = select(image, x, x.x > image.x);
+  // Model length per pixel at t along the ray.
+  let per_px = length(u.cam_up.xyz) / u.screen.z;
+  let eye_dist = length(u.cam_back.xyz);
+  var marks = array<vec4<f32>, 3>(
+    vec4<f32>(projector, select(0.0, 5.0, finite)),
+    vec4<f32>(x, select(0.0, 3.5, u.projection.z == 1.0)),
+    vec4<f32>(image, select(0.0, 3.5, u.projection.z == 1.0)),
+  );
+  if (u.projection.z == 1.0) {
+    // The closest points of the ray and the segment.
+    let e = end - start;
+    let w0 = o - start;
+    let be = dot(dir, e);
+    let ce = dot(e, e);
+    let denom = max(ce - be * be, 1e-12);
+    let s_seg = saturate((dot(e, w0) - be * dot(dir, w0)) / denom);
+    let on_seg = start + s_seg * e;
+    let t_seg = dot(on_seg - o, dir);
+    let scale = per_px * select(1.0, (t_seg - t_min) / eye_dist, perspective);
+    let dist = length(o + t_seg * dir - on_seg) / scale;
+    let alpha = saturate(1.25 - dist) * select(0.0, 1.0, t_seg > t_min);
+    col = mix(col, probe_color(), alpha * seen(t_seg, t_front, hi, t_plane, w_front, w_back, w_plane));
+  }
+  for (var k = 0; k < 3; k++) {
+    let m = marks[k];
+    let t_m = dot(m.xyz - o, dir);
+    let scale = per_px * select(1.0, (t_m - t_min) / eye_dist, perspective);
+    let dist = length(o + t_m * dir - m.xyz) / scale;
+    let alpha = saturate(m.w + 0.5 - dist) * select(0.0, 1.0, t_m > t_min && m.w > 0.0);
+    let tint = select(probe_color(), projector_color(), k == 0);
+    col = mix(col, tint, alpha * seen(t_m, t_front, hi, t_plane, w_front, w_back, w_plane));
+  }
   return col;
+}
+
+// How much of a mark at depth t shows: fully in front of every layer, and
+// a quarter through those in front of it, by their shares of the pixel.
+fn seen(t: f32, t_front: f32, t_back: f32, t_plane: f32, w_front: f32, w_back: f32,
+    w_plane: f32) -> f32 {
+  let hidden = select(0.0, w_front, t_front < t) + select(0.0, w_back, t_back < t)
+    + select(0.0, w_plane, t_plane < t);
+  return 1.0 - 0.75 * saturate(hidden);
 }
 
 // The length across a line of covector c, per pixel, from the pixel's sides

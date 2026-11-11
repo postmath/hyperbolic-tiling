@@ -227,7 +227,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §26.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §27.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -726,7 +726,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§25) that is acceptable.
+thousand ALU operations per pixel (§26) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -954,7 +954,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §26.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §27.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1556,7 +1556,7 @@ window and writes it as a PNG, for icons and documentation.
 
 Check: the export of a {5,6} view matched a headless Chrome screenshot of its
 `#view=` URL away from the rim, where the GPU's f32 and SwiftShader's differ
-in the last pixels. Exports also make §26.3's throwaway build unnecessary for
+in the last pixels. Exports also make §27.3's throwaway build unnecessary for
 still pictures.
 
 ---
@@ -1723,7 +1723,7 @@ like the tiling reset keeps λ.
 
 ### 22.4 Checks
 
-Unit tests: those of math §14.6, and the field of view's text round trip.
+Unit tests: those of math §14.7, and the field of view's text round trip.
 The controls were driven in headless Chrome through the DevTools protocol:
 a short Python script that speaks the WebSocket protocol over a plain
 socket, since the machine had no WebSocket module and no Xvfb, and sends
@@ -1832,7 +1832,56 @@ without a dark fringe.
 
 ---
 
-## 25. Precision and performance notes
+## 25. Milestone 25: the projection, shown
+
+Commit: *Show the projection in the 3D view.* The mathematics is in math
+§14.6.
+
+**Show the projection**, under the 3D view in the panel, draws how the disk
+projects the surface: the disk itself on the plane tangent at $O$, the
+point $(-\lambda,0,0)$ projected from, and the line from it through the
+point under the pointer to that point's image. Moving the λ slider then
+shows Klein, Poincaré and Gans as geometry. It needs the disk chart and a
+curved surface; the checkbox says why on hover otherwise.
+
+* **Probe.** `Model::probe` follows the pointer: over the 3D view through
+  `camera::probe`, which also sees the picture on the plane, and over the
+  inset as the disk's own point. The uniforms carry it as a point of the
+  surface, so that the shader finds the projection point, the image and the
+  segment itself. A probe from the 3D view is also marked in the inset.
+* **Layers.** The plane became a third layer beside the front and back hits
+  of §24, each with a coverage and a depth, composed front to back. Its
+  point, `disk_point` of half the plane position, is the 2D disk's code
+  moved into a function, and is kept continuous past the picture's edge,
+  as the hits are, for the derivatives.
+* **Overlays.** The segment and dots are drawn by their distance in pixels
+  from the pixel's ray, with the model length of a pixel at that depth
+  scaled from the target's, $h$ over the pane's scale. Behind a layer they
+  are drawn at a quarter strength rather than hidden, so the line can be
+  followed through the plane and the bowl.
+* **Uniforms** grew by two vec4s, to 368 bytes: flags and the plane
+  picture's largest $|\mathbf u|^2$, and the probe. `--export` and the view line,
+  as `proj=1`, show the projection without a probe.
+
+Two artifacts on the way, both from derivatives that blow up:
+
+* A faint line across the whole view along the plane's horizon. There
+  rays run nearly parallel to the plane, the plane position changes without
+  bound between neighbouring pixels, and the edge's coverage came out near
+  one half. Only pixels near the edge are blended now.
+* The disk's rim, seen obliquely, stair-stepped: the chart's fade at the rim
+  spans 2% of $\rho^2$, which can be less than a pixel. The rim also gets a
+  pixel's blend.
+
+Check: exports of {7,3} at Klein, Poincaré and Gans and of {5,3} at
+stereographic and orthographic, from above and below, all with the radii of
+math §14.6. In headless Chrome the pointer over the bowl, over the plane and
+over the inset drew the line, faint where the disk hides it, and the inset
+marked the probe from the 3D view.
+
+---
+
+## 26. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -1850,9 +1899,9 @@ without a dark fringe.
 
 ---
 
-## 26. Workflow notes
+## 27. Workflow notes
 
-### 26.1 jj
+### 27.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -1871,13 +1920,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 26.2 Checks before each commit
+### 27.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 26.3 A throwaway verification build
+### 27.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -1887,7 +1936,7 @@ snapshot into a commit.
 
 ---
 
-## 27. Exercises and extensions
+## 28. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.
@@ -1930,11 +1979,10 @@ snapshot into a commit.
     the pointer's ray with `camera::hit` at both ends of a motion and apply
     `Geometry::translate` between the hits, as `View::pan` does in a chart.
     Let go where the ray grazes the surface, as `pannable` does at the rim.
-13. **The projection, shown.** Draw the projection point $(-\lambda,0,0)$, the
-    plane $x_0=0$ with the disk on it, and the ray from the point through the
-    pointer's hit to its image, so that moving λ shows Klein, Poincaré and
-    Gans as geometry. The shader then needs a second surface, the plane, and
-    whichever of the two hits is nearer.
+13. **The globe in 3D.** With the λ < -1 projections of exercise 9, the
+    point projected from lies above the sphere. Show it, and check that the
+    line through it meets the sphere twice, of which the picture shows the
+    nearer.
 
 ---
 

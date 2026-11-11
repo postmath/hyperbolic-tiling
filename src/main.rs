@@ -9,7 +9,7 @@ mod view;
 
 use std::{sync::Arc, time::Duration};
 
-use glam::DVec2;
+use glam::{DVec2, DVec3};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalPosition,
@@ -161,6 +161,9 @@ struct Model {
     cursor: Option<PhysicalPosition<f64>>,
     modifiers: ModifiersState,
     drag: Option<(MouseButton, Drag, Pane)>,
+    /// With the projection shown, the point of the surface under the pointer,
+    /// and whether the pointer is over the 3D view.
+    probe: Option<(DVec3, bool)>,
     /// The last left press, to detect a double click.
     last_press: Option<(Instant, PhysicalPosition<f64>)>,
     /// When egui next wants a frame.
@@ -184,6 +187,7 @@ impl Model {
             modifiers: ModifiersState::empty(),
             drag: None,
             last_press: None,
+            probe: None,
             repaint_at: None,
         }
     }
@@ -286,7 +290,15 @@ impl Model {
                     camera,
                     &self.settings,
                 );
-                (u, pane.rect)
+                let projects = self.settings.projects(self.tiling.geometry);
+                (
+                    if projects {
+                        u.with_projection(self.probe)
+                    } else {
+                        u
+                    },
+                    pane.rect,
+                )
             })
             .collect();
         gfx.renderer.render(&drawn, out.overlay);
@@ -402,6 +414,26 @@ impl Model {
         }
     }
 
+    /// The point of the surface under the pointer at `pos`, for the
+    /// projection: on the surface or its picture in 3D, or in the disk.
+    fn probe(&self, pos: PhysicalPosition<f64>, gfx: &Ready) -> Option<(DVec3, bool)> {
+        let g = self.tiling.geometry;
+        if !self.settings.projects(g) {
+            return None;
+        }
+        let pane = self.pane_at(pos, gfx);
+        let (d, mu) = (pane.to_screen(pos), self.settings.mu);
+        let Some(_) = pane.chart else {
+            let ray = self.camera.ray(d, self.settings.fov.to_radians());
+            let cap = camera::cap(g, self.settings.extent);
+            return camera::probe(g, cap, mu, &ray).map(|x| (x, true));
+        };
+        let proj = self.projection();
+        self.view
+            .pannable(d, proj)
+            .then(|| (g.screen_to_point(d, proj), false))
+    }
+
     /// A wheel or pinch of `notches`, positive away from the user or
     /// spreading, in `pane`: dollies the 3D view in, or if `zoom` zooms it
     /// in.
@@ -487,8 +519,17 @@ impl Model {
                     gfx.window.request_redraw();
                 }
                 self.cursor = Some(position);
+                let probe = self.probe(position, gfx);
+                if probe != self.probe {
+                    self.probe = probe;
+                    gfx.window.request_redraw();
+                }
             }
-            WindowEvent::CursorLeft { .. } => self.cursor = None,
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor = None;
+                self.probe = None;
+                gfx.window.request_redraw();
+            }
             _ => {}
         }
     }
@@ -602,6 +643,11 @@ fn export(snapshot: &Snapshot, path: &str) -> Result<(), png::EncodingError> {
         main.chart.is_none().then_some(&snapshot.camera),
         &settings,
     );
+    let u = if settings.projects(snapshot.tiling.geometry) {
+        u.with_projection(None)
+    } else {
+        u
+    };
     let pixels = pollster::block_on(gpu::render_image(&u, snapshot.size));
     let file = std::io::BufWriter::new(std::fs::File::create(path)?);
     let [width, height] = snapshot.size;

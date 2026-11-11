@@ -5,7 +5,7 @@ use glam::DVec3;
 use winit::{event_loop::OwnedDisplayHandle, window::Window};
 
 use crate::{
-    camera::{self, Camera},
+    camera::{self, Camera, PLANE_RHO_MAX},
     geom::{Chart, ORIGIN, Projection},
     tiling::Tiling,
     ui::Settings,
@@ -45,6 +45,12 @@ pub struct Uniforms {
     pub cam_up: [f32; 4],
     /// xyz = from the target to the eye, w = 1; or orthographic, xyz = back, w = 0.
     pub cam_back: [f32; 4],
+    /// The projection in 3D (math §14.6): x = 1 if shown; y = the largest
+    /// |u|² of the picture on the plane; z = 1 if `probe` is shown, and w = 1
+    /// if it is also marked in the chart, having come from the 3D view.
+    pub projection: [f32; 4],
+    /// xyz = the point of the surface under the pointer; w unused.
+    pub probe: [f32; 4],
 }
 
 impl Uniforms {
@@ -128,7 +134,21 @@ impl Uniforms {
             cam_right,
             cam_up,
             cam_back,
+            projection: [0.0; 4],
+            probe: [0.0; 4],
         }
+    }
+
+    /// Shows the projection, with the ray through `probe`, a point of the
+    /// surface, and whether it came from the 3D view.
+    pub fn with_projection(mut self, probe: Option<(DVec3, bool)>) -> Self {
+        let max = PLANE_RHO_MAX * PLANE_RHO_MAX;
+        let (shown, marked) = probe.map_or((0.0, 0.0), |(_, m)| (1.0, m as u8 as f32));
+        self.projection = [1.0, max as f32, shown, marked];
+        if let Some((x, _)) = probe {
+            self.probe = x.as_vec3().extend(0.0).to_array();
+        }
+        self
     }
 }
 

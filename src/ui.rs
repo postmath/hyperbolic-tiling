@@ -20,6 +20,7 @@ about ∞, or slide the band along its axis. R: reset the tiling's position.
 In 3D, drag: orbit. Right drag or Shift+drag: move the camera's target.
 Wheel: dolly. Ctrl+wheel or pinch: zoom. Double click: orbit about that
 point. Shift+R: reset the camera. The inset takes the chart's drags.
+With the projection shown, point at the surface, its picture or the inset.
 P / Shift+P: step p up / down. Q / Shift+Q: step q.
 L / Shift+L: step the prime ℓ for tile colors. C: toggle tile colors / two-tone.
 H: hide / show the control panel. D: show / hide debug info.
@@ -46,6 +47,8 @@ pub struct Settings {
     pub inset: bool,
     /// In 3D, show the chart in the main pane, and the 3D view in the inset.
     pub swapped: bool,
+    /// In 3D, show how the disk projects the surface; see `Settings::projects`.
+    pub show_projection: bool,
     /// How far from the origin the 3D view shows the hyperboloid or plane.
     pub extent: f64,
     /// The 3D view's vertical field of view in degrees; 0 is orthographic.
@@ -66,6 +69,7 @@ impl Default for Settings {
             view_3d: false,
             inset: true,
             swapped: false,
+            show_projection: false,
             extent: 3.0,
             fov: 45.0,
             show_panel: true,
@@ -77,6 +81,15 @@ impl Default for Settings {
 impl Settings {
     pub fn projection(&self, g: Geometry) -> Projection {
         Projection::new(self.chart, g, self.mu)
+    }
+
+    /// Whether the 3D view shows the projection: asked for, and the disk
+    /// shown, of a surface that is not the plane, whose projections agree.
+    pub fn projects(&self, g: Geometry) -> bool {
+        self.view_3d
+            && self.show_projection
+            && g != Geometry::Euclidean
+            && self.projection(g).chart == Chart::Disk
     }
 }
 
@@ -304,6 +317,25 @@ fn space(ui: &mut Ui, settings: &mut Settings, g: Geometry) {
     } else {
         "For the 3D view."
     });
+    let why = if !settings.view_3d {
+        Some("For the 3D view.")
+    } else if g == Geometry::Euclidean {
+        Some("All projections of the plane agree.")
+    } else if settings.projection(g).chart != Chart::Disk {
+        Some("Only the disk is a projection from a point.")
+    } else {
+        None
+    };
+    let response = ui.add_enabled_ui(why.is_none(), |ui| {
+        ui.checkbox(&mut settings.show_projection, "Show the projection")
+            .on_hover_text(
+                "The disk on the plane tangent at the centre, the point projected \
+                 from, and the line through the point under the pointer",
+            );
+    });
+    if let Some(why) = why {
+        response.response.on_disabled_hover_text(why);
+    }
     ui.add_enabled_ui(settings.view_3d, |ui| {
         ui.add(
             Slider::new(&mut settings.fov, 0.0..=ZOOM_FOVS[1])

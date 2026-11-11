@@ -47,7 +47,10 @@ A panel at the top left holds the main controls:
 * **3D view:** the surface itself, embedded in space, instead of a chart.
   The hyperboloid and the plane are cut off at the **extent**, a distance
   from the centre. The **field of view** runs from orthographic, 0, to 120°;
-  changing it keeps the size of the picture at the camera's target. An inset
+  changing it keeps the size of the picture at the camera's target. **Show
+  the projection** draws how the disk projects the surface: the disk on the
+  plane tangent at the centre, the point (-λ, 0, 0) projected from, and the
+  line through the point under the pointer to its image. An inset
   at the bottom right shows the chart, and takes the chart's drags; its
   buttons swap it with the main view or hide it.
 * **Chart:** the disk, the upper half-plane, or the band (Mercator on the
