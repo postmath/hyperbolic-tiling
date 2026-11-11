@@ -13,7 +13,7 @@ use crate::{
     geom::Chart,
     quotient::Quotient,
     tiling::{Count, Tiling},
-    ui::Settings,
+    ui::{Layout, Settings},
     view::View,
 };
 
@@ -30,9 +30,8 @@ pub struct Snapshot {
     pub line_px: f32,
     pub vertex_px: f32,
     pub quotient_colors: bool,
-    pub view_3d: bool,
-    /// The 3D view's chart in the main pane, which an export shows.
-    pub swapped: bool,
+    /// Which view is in the main pane, which an export shows.
+    pub layout: Layout,
     pub show_projection: bool,
     pub camera: Camera,
     pub extent: f64,
@@ -57,8 +56,7 @@ impl Snapshot {
             line_px: settings.line_px,
             vertex_px: settings.vertex_px,
             quotient_colors: settings.quotient_colors,
-            view_3d: settings.view_3d,
-            swapped: settings.swapped,
+            layout: settings.layout,
             show_projection: settings.show_projection,
             camera: *camera,
             extent: settings.extent,
@@ -75,8 +73,7 @@ impl Snapshot {
             line_px: self.line_px,
             vertex_px: self.vertex_px,
             quotient_colors: self.quotient_colors,
-            view_3d: self.view_3d,
-            swapped: self.swapped,
+            layout: self.layout,
             show_projection: self.show_projection,
             extent: self.extent,
             fov: self.fov,
@@ -135,8 +132,17 @@ impl Snapshot {
             line_px: number("line")? as f32,
             vertex_px: number("dot")? as f32,
             quotient_colors: get("colors")? == "1",
-            view_3d: get("d3").is_ok_and(|v| v == "1"),
-            swapped: get("swap").is_ok_and(|v| v == "1"),
+            layout: {
+                let on = |key| get(key).is_ok_and(|v| v == "1");
+                // Lines from before `inset=` have their inset.
+                let inset = get("inset") != Ok("0");
+                match (on("d3"), on("swap"), inset) {
+                    (false, _, _) | (true, true, false) => Layout::Chart,
+                    (true, true, true) => Layout::ChartWithSpace,
+                    (true, false, true) => Layout::SpaceWithChart,
+                    (true, false, false) => Layout::Space,
+                }
+            },
             show_projection: get("proj").is_ok_and(|v| v == "1"),
             camera: match get("cam") {
                 Err(_) => Camera::new(tiling.geometry, extent),
@@ -184,7 +190,7 @@ impl fmt::Display for Snapshot {
             self.vertex_px,
             self.quotient_colors as u8,
         )?;
-        if self.view_3d {
+        if self.layout.has_space() {
             let c = &self.camera;
             let (t, az, el, h) = (c.target, c.azimuth, c.elevation, c.half_height);
             write!(
@@ -192,8 +198,11 @@ impl fmt::Display for Snapshot {
                 ",d3=1,cam={}:{}:{}:{az}:{el}:{h},extent={},fov={}",
                 t.x, t.y, t.z, self.extent, self.fov
             )?;
-            if self.swapped {
+            if !self.layout.space_main() {
                 write!(f, ",swap=1")?;
+            }
+            if !self.layout.has_inset() {
+                write!(f, ",inset=0")?;
             }
             if self.show_projection {
                 write!(f, ",proj=1")?;
@@ -304,7 +313,7 @@ mod tests {
             let old = Snapshot::parse(&line.replace(",chart=band", "")).unwrap();
             assert_eq!(old.chart, Chart::Disk);
             assert!(Snapshot::parse(&line.replace("chart=band", "chart=x")).is_err());
-            assert!(!back.view_3d);
+            assert_eq!(back.layout, Layout::Chart);
             assert!(!line.contains(|c: char| " ;&#'\"".contains(c)), "{line}");
         }
     }
@@ -313,8 +322,7 @@ mod tests {
     fn round_trips_the_3d_view() {
         let t = Tiling::new(7, 3).unwrap();
         let settings = Settings {
-            view_3d: true,
-            swapped: true,
+            layout: Layout::ChartWithSpace,
             show_projection: true,
             extent: 3.25,
             fov: 0.0,
@@ -330,7 +338,17 @@ mod tests {
         let line = line.to_string();
         let back = Snapshot::parse(&line).unwrap();
         assert_eq!(back.to_string(), line);
-        assert!(back.view_3d && back.swapped && back.show_projection);
+        assert!(back.layout == Layout::ChartWithSpace && back.show_projection);
+        for layout in Layout::ALL {
+            let settings = Settings { layout, ..settings };
+            let line = Snapshot::new(&t, &View::new(t.geometry), &camera, &settings, [800, 600]);
+            assert_eq!(Snapshot::parse(&line.to_string()).unwrap().layout, layout);
+        }
+        let old = line.replace(",swap=1", "");
+        assert_eq!(
+            Snapshot::parse(&old).unwrap().layout,
+            Layout::SpaceWithChart
+        );
         assert_eq!(back.camera, camera);
         assert_eq!((back.extent, back.fov), (3.25, 0.0));
     }

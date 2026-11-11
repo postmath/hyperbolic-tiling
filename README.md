@@ -44,15 +44,17 @@ A panel at the top left holds the main controls:
   and the dot colors tell hyperbolic, Euclidean and spherical pairs apart.
 * **Tile colors mod ℓ:** a toggle, plus a stepper for the prime ℓ and the
   resulting color count.
-* **3D view:** the surface itself, embedded in space, instead of a chart.
-  The hyperboloid and the plane are cut off at the **extent**, a distance
-  from the centre. The **field of view** runs from orthographic, 0, to 120°;
-  changing it keeps the size of the picture at the camera's target. **Show
-  the projection** draws how the disk projects the surface: the disk on the
-  plane tangent at the centre, the point (-λ, 0, 0) projected from, and the
-  line through the point under the pointer to its image. An inset
-  at the bottom right shows the chart, and takes the chart's drags; its
-  buttons swap it with the main view or hide it.
+* **View:** the chart, or the 3D view of the surface itself, embedded in
+  space; each alone, or with the other in an inset at the bottom right.
+  Four small pictures of these layouts pick one. The inset takes its own
+  view's drags, and its buttons swap it with the main view or hide it.
+* **3D view settings:** the hyperboloid and the plane are cut off at the
+  **extent**, a distance from the centre. The **field of view** runs from
+  orthographic, 0, to 120°; changing it keeps the size of the picture at the
+  camera's target. **Show the projection** draws how the disk projects the
+  surface: the disk on the plane tangent at the centre, the point
+  (-λ, 0, 0) projected from, and the line through the point under the
+  pointer to its image.
 * **Chart:** the disk, the upper half-plane, or the band (Mercator on the
   sphere). The other two are tied to the disk: the half-plane's ∞ is the top
   of the disk's rim, and the band's axis is its horizontal diameter. They

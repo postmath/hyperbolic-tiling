@@ -111,23 +111,17 @@ impl Pane {
 /// fills it, then in 3D the inset, if shown, at the bottom right. The 2D
 /// pane shows `chart`.
 fn panes([w, h]: [u32; 2], settings: &Settings, chart: Chart) -> Vec<Pane> {
-    let full = [0, 0, w, h];
-    if !settings.view_3d {
-        return vec![Pane {
-            rect: full,
-            chart: Some(chart),
-        }];
-    }
-    let (main, inset) = if settings.swapped {
-        (Some(chart), None)
-    } else {
+    let layout = settings.layout;
+    let (main, inset) = if layout.space_main() {
         (None, Some(chart))
+    } else {
+        (Some(chart), None)
     };
     let mut panes = vec![Pane {
-        rect: full,
+        rect: [0, 0, w, h],
         chart: main,
     }];
-    if settings.inset {
+    if layout.has_inset() {
         let side = (w.min(h) / 3).max(1);
         let gap = MARGIN_PX as u32;
         panes.push(Pane {
@@ -732,12 +726,11 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::Layout;
 
-    fn settings(swapped: bool, inset: bool) -> Settings {
+    fn settings(layout: Layout) -> Settings {
         Settings {
-            view_3d: true,
-            swapped,
-            inset,
+            layout,
             ..Settings::default()
         }
     }
@@ -745,7 +738,7 @@ mod tests {
     #[test]
     fn the_inset_sits_inside_the_bottom_right_corner() {
         let size = [900, 600];
-        let [main, inset] = panes(size, &settings(false, true), Chart::Band)[..] else {
+        let [main, inset] = panes(size, &settings(Layout::SpaceWithChart), Chart::Band)[..] else {
             panic!("two panes");
         };
         assert_eq!(main.rect, [0, 0, 900, 600]);
@@ -762,16 +755,17 @@ mod tests {
     }
 
     #[test]
-    fn swapping_and_hiding_change_the_panes() {
+    fn each_layout_has_its_panes() {
         let size = [900, 600];
-        let swapped = panes(size, &settings(true, true), Chart::Disk);
-        assert_eq!(
-            (swapped[0].chart, swapped[1].chart),
-            (Some(Chart::Disk), None)
-        );
-        assert_eq!(panes(size, &settings(false, false), Chart::Disk).len(), 1);
-        let flat = panes(size, &Settings::default(), Chart::Disk);
-        assert_eq!(flat.len(), 1);
-        assert_eq!(flat[0].chart, Some(Chart::Disk));
+        let charts = |layout| {
+            (panes(size, &settings(layout), Chart::Disk).iter())
+                .map(|p| p.chart)
+                .collect::<Vec<_>>()
+        };
+        let disk = Some(Chart::Disk);
+        assert_eq!(charts(Layout::Chart), [disk]);
+        assert_eq!(charts(Layout::ChartWithSpace), [disk, None]);
+        assert_eq!(charts(Layout::SpaceWithChart), [None, disk]);
+        assert_eq!(charts(Layout::Space), [None]);
     }
 }

@@ -227,7 +227,7 @@ synchronize to and falls back to a ~1 Hz fake vblank. Every vsync'd present
 mode is then paced at 1 Hz, and the screen lags. That is an artifact of
 testing on an unattended machine, not a bug. So the app keeps `AutoVsync`,
 and the Mailbox commit was abandoned. For automated screenshots I built a
-throwaway copy with `PresentMode::Immediate` (see §28.3). Lesson: when timing
+throwaway copy with `PresentMode::Immediate` (see §29.3). Lesson: when timing
 looks quantized to suspicious round numbers, check the display, not just the
 code.
 
@@ -726,7 +726,7 @@ an animation, a fraction of a second before a tooltip appears, and
 idle when nothing changes; 5 seconds of idling, with or without a tooltip
 showing, measured 0 CPU ticks. What did change is that every pointer motion
 now redraws, because egui needs a pass to update hover states. At a few
-thousand ALU operations per pixel (§27) that is acceptable.
+thousand ALU operations per pixel (§28) that is acceptable.
 
 ### 7.5 Three surprises
 
@@ -954,7 +954,7 @@ geometries:
   The sphere needs at most 6 sweeps. The plane needs 20 out to 4 disk radii,
   growing linearly with distance. The hyperbolic worst case is unchanged at 34.
 * Screenshots of all eight new tilings, and pans on the plane and the sphere,
-  using the XTest driver of §3.5 and the Immediate build of §28.3. Keys sent
+  using the XTest driver of §3.5 and the Immediate build of §29.3. Keys sent
   150 ms apart sometimes went missing, or a screenshot showed the previous
   tiling; half a second between steps made the run reliable. I did not track
   down which of the two it was.
@@ -1556,7 +1556,7 @@ window and writes it as a PNG, for icons and documentation.
 
 Check: the export of a {5,6} view matched a headless Chrome screenshot of its
 `#view=` URL away from the rim, where the GPU's f32 and SwiftShader's differ
-in the last pixels. Exports also make §28.3's throwaway build unnecessary for
+in the last pixels. Exports also make §29.3's throwaway build unnecessary for
 still pictures.
 
 ---
@@ -1916,7 +1916,38 @@ the plane unchanged.
 
 ---
 
-## 27. Precision and performance notes
+## 27. Milestone 27: four layouts
+
+Commit: *Choose among four view layouts in the panel.*
+
+The window shows the chart or the 3D view, each alone or with the other in
+an inset. Three settings had described this: the 3D view on or off,
+swapped, and the inset shown. They allowed a fifth state, the chart with a
+hidden 3D inset, which looked like the 3D view off but kept a **Show 3D**
+button in the corner. `ui::Layout` now has exactly the four values, and
+replaces the three settings and the "3D view" checkbox.
+
+* **Panel.** A row of four small pictures, drawn with egui's painter in
+  `layout_button`: a window with the main view's name, and where there is
+  one the inset as a small square at the bottom right, where it sits on
+  screen. Hovering names the layout in words. The 3D settings are enabled
+  whenever a 3D view is shown, in either pane.
+* **Inset buttons.** **Swap** exchanges the views, `Layout::swapped`, and
+  **Hide** leaves the main view alone, `Layout::alone`. The corner buttons
+  that brought a hidden inset back are gone; the panel does that.
+* **View line.** `d3=1` and `swap=1` keep their meaning, and `inset=0` marks a
+  layout without its inset. Older lines, which have no `inset=`, load with
+  it, as they did.
+
+Check: unit tests for the transitions, the panes of each layout and the view
+line's round trip of all four. In headless Chrome: picking a layout, then
+Swap and Hide, gave the layouts expected, as V printed them. One run's click
+on the panel did not register; five reruns of that and similar sequences
+did, so it looks like the headless browser's timing rather than the app.
+
+---
+
+## 28. Precision and performance notes
 
 * **f64 on the CPU, f32 on the GPU.** CPU work is per event and trivially
   cheap, so use f64 everywhere there. The GPU gets $M^{-1}$ rounded once per
@@ -1934,9 +1965,9 @@ the plane unchanged.
 
 ---
 
-## 28. Workflow notes
+## 29. Workflow notes
 
-### 28.1 jj
+### 29.1 jj
 
 The repo is a colocated jj repository. Habits used here:
 
@@ -1955,13 +1986,13 @@ The repo is a colocated jj repository. Habits used here:
   overwritten by the next restore.
 * `jj op log` is the safety net: every operation is recorded and restorable.
 
-### 28.2 Checks before each commit
+### 29.2 Checks before each commit
 
 `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`, and for
 visual changes a screenshot. Intermediate commits may have dead-code
 warnings for helpers that a later milestone uses; the final tree has none.
 
-### 28.3 A throwaway verification build
+### 29.3 A throwaway verification build
 
 To screenshot reliably with the monitor off (§1.7), a script copied `src/`,
 `Cargo.toml` and `Cargo.lock` to a scratch directory, `sed`-replaced
@@ -1971,7 +2002,7 @@ snapshot into a commit.
 
 ---
 
-## 29. Exercises and extensions
+## 30. Exercises and extensions
 
 1. **Supersampling.** Shade 4 sub-pixel samples per fragment (offset `frag.xy`)
    and average. Compare with the analytic AA, especially at the rim.

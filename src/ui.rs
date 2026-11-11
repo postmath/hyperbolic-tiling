@@ -19,7 +19,7 @@ Drag: pan. Right drag or Shift+drag: rotate the disk, scale the half-plane
 about ∞, or slide the band along its axis. R: reset the tiling's position.
 In 3D, drag: orbit. Right drag or Shift+drag: move the camera's target.
 Wheel: dolly. Ctrl+wheel or pinch: zoom. Double click: orbit about that
-point. Shift+R: reset the camera. The inset takes the chart's drags.
+point. Shift+R: reset the camera. The inset takes its own view's drags.
 With the projection shown, point at the surface, its picture or the inset.
 P / Shift+P: step p up / down. Q / Shift+Q: step q.
 L / Shift+L: step the prime ℓ for tile colors. C: toggle tile colors / two-tone.
@@ -31,6 +31,66 @@ const LATTICE_PX: f32 = 280.0;
 /// Poincaré disk's rim fade starts, x0 = 99, where f32 still holds.
 const MAX_EXTENT: f64 = 5.0;
 
+/// What the window shows: the chart or the 3D view, each alone or with the
+/// other in an inset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    Chart,
+    ChartWithSpace,
+    SpaceWithChart,
+    Space,
+}
+
+impl Layout {
+    pub const ALL: [Self; 4] = [
+        Self::Chart,
+        Self::ChartWithSpace,
+        Self::SpaceWithChart,
+        Self::Space,
+    ];
+
+    /// Whether the 3D view is shown, in either pane.
+    pub fn has_space(self) -> bool {
+        self != Self::Chart
+    }
+
+    /// Whether the main pane shows the 3D view.
+    pub fn space_main(self) -> bool {
+        matches!(self, Self::SpaceWithChart | Self::Space)
+    }
+
+    pub fn has_inset(self) -> bool {
+        matches!(self, Self::ChartWithSpace | Self::SpaceWithChart)
+    }
+
+    /// With the main view and the inset exchanged.
+    pub fn swapped(self) -> Self {
+        match self {
+            Self::ChartWithSpace => Self::SpaceWithChart,
+            Self::SpaceWithChart => Self::ChartWithSpace,
+            other => other,
+        }
+    }
+
+    /// The main view alone.
+    pub fn alone(self) -> Self {
+        if self.space_main() {
+            Self::Space
+        } else {
+            Self::Chart
+        }
+    }
+
+    fn describe(self) -> &'static str {
+        match self {
+            Self::Chart => "The 2D chart",
+            Self::ChartWithSpace => "The 2D chart, with the 3D view in an inset",
+            Self::SpaceWithChart => "The 3D view, with the 2D chart in an inset",
+            Self::Space => "The 3D view",
+        }
+    }
+}
+
 pub struct Settings {
     /// Color tiles by the finite quotient, rather than two-tone by parity.
     pub quotient_colors: bool,
@@ -41,12 +101,7 @@ pub struct Settings {
     pub mu: f64,
     /// The chart chosen, shown where it applies; see `Projection::new`.
     pub chart: Chart,
-    /// Show the 3D view of the surface rather than a chart.
-    pub view_3d: bool,
-    /// In 3D, show the other view in an inset.
-    pub inset: bool,
-    /// In 3D, show the chart in the main pane, and the 3D view in the inset.
-    pub swapped: bool,
+    pub layout: Layout,
     /// In 3D, show how the disk projects the surface; see `Settings::projects`.
     pub show_projection: bool,
     /// How far from the origin the 3D view shows the hyperboloid or plane.
@@ -66,9 +121,7 @@ impl Default for Settings {
             vertex_px: 3.5,
             mu: CONFORMAL_MU,
             chart: Chart::Disk,
-            view_3d: false,
-            inset: true,
-            swapped: false,
+            layout: Layout::Chart,
             show_projection: false,
             extent: 3.0,
             fov: DEFAULT_FOV,
@@ -86,7 +139,7 @@ impl Settings {
     /// Whether the 3D view shows the projection: asked for, and the disk
     /// shown, of a surface that is not the plane, whose projections agree.
     pub fn projects(&self, g: Geometry) -> bool {
-        self.view_3d
+        self.layout.has_space()
             && self.show_projection
             && g != Geometry::Euclidean
             && self.projection(g).chart == Chart::Disk
@@ -165,7 +218,7 @@ impl Gui {
                         action = panel(ui, settings, tiling, colors, debug).or(action.take());
                     });
             }
-            if settings.view_3d {
+            if let Some(inset) = inset {
                 inset_controls(ctx, settings, inset);
             }
         });
@@ -185,20 +238,12 @@ impl Gui {
 }
 
 /// A frame around the inset, with buttons to swap it with the main view and
-/// to hide it; or once hidden, one to show it again.
-fn inset_controls(ctx: &egui::Context, settings: &mut Settings, inset: Option<PaneRect>) {
-    let other = if settings.swapped { "3D" } else { "2D" };
-    let Some([x, y, w, h]) = inset else {
-        let corner = ctx.content_rect().right_bottom() - vec2(8.0, 8.0);
-        egui::Area::new(egui::Id::unique("show inset"))
-            .pivot(Align2::RIGHT_BOTTOM)
-            .fixed_pos(corner)
-            .show(ctx, |ui| {
-                if ui.button(format!("Show {other}")).clicked() {
-                    settings.inset = true;
-                }
-            });
-        return;
+/// to hide it.
+fn inset_controls(ctx: &egui::Context, settings: &mut Settings, [x, y, w, h]: PaneRect) {
+    let other = if settings.layout.space_main() {
+        "2D"
+    } else {
+        "3D"
     };
     let rect = Rect::from_min_size(Pos2::new(x as f32, y as f32), vec2(w as f32, h as f32))
         / ctx.pixels_per_point();
@@ -218,14 +263,14 @@ fn inset_controls(ctx: &egui::Context, settings: &mut Settings, inset: Option<Pa
                     .small_button("Swap")
                     .on_hover_text("Swap the 2D and 3D views");
                 if swap.clicked() {
-                    settings.swapped ^= true;
+                    settings.layout = settings.layout.swapped();
                 }
                 if ui
                     .small_button("Hide")
                     .on_hover_text(format!("Hide the {other} view"))
                     .clicked()
                 {
-                    settings.inset = false;
+                    settings.layout = settings.layout.alone();
                 }
             });
         });
@@ -290,7 +335,7 @@ fn panel(
         if ui.button("Reset tiling").clicked() {
             action = Some(Action::ResetTiling);
         }
-        if settings.view_3d && ui.button("Reset camera").clicked() {
+        if settings.layout.has_space() && ui.button("Reset camera").clicked() {
             action = Some(Action::ResetCamera);
         }
     });
@@ -305,19 +350,27 @@ fn panel(
     action
 }
 
-/// The 3D view's switch and settings.
+/// The layout, and the 3D view's settings.
 fn space(ui: &mut Ui, settings: &mut Settings, g: Geometry) {
-    ui.checkbox(&mut settings.view_3d, "3D view");
-    ui.add_enabled_ui(settings.view_3d && g != Geometry::Spherical, |ui| {
+    ui.horizontal(|ui| {
+        ui.label("View");
+        for layout in Layout::ALL {
+            if layout_button(ui, layout, settings.layout == layout).clicked() {
+                settings.layout = layout;
+            }
+        }
+    });
+    let space = settings.layout.has_space();
+    ui.add_enabled_ui(space && g != Geometry::Spherical, |ui| {
         ui.add(Slider::new(&mut settings.extent, 1.0..=MAX_EXTENT).text("Extent"));
     })
     .response
-    .on_disabled_hover_text(if settings.view_3d {
+    .on_disabled_hover_text(if space {
         "The 3D view shows the whole sphere."
     } else {
         "For the 3D view."
     });
-    let why = if !settings.view_3d {
+    let why = if !space {
         Some("For the 3D view.")
     } else if g == Geometry::Euclidean {
         Some("All projections of the plane agree.")
@@ -336,7 +389,7 @@ fn space(ui: &mut Ui, settings: &mut Settings, g: Geometry) {
     if let Some(why) = why {
         response.response.on_disabled_hover_text(why);
     }
-    ui.add_enabled_ui(settings.view_3d, |ui| {
+    ui.add_enabled_ui(space, |ui| {
         ui.add(
             Slider::new(&mut settings.fov, 0.0..=ZOOM_FOVS[1])
                 .text("Field of view")
@@ -346,6 +399,46 @@ fn space(ui: &mut Ui, settings: &mut Settings, g: Geometry) {
     })
     .response
     .on_disabled_hover_text("For the 3D view.");
+}
+
+/// A small picture of `layout`: a window with its main view's name, and the
+/// inset, if any, where it sits, at the bottom right.
+fn layout_button(ui: &mut Ui, layout: Layout, selected: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(40.0, 30.0), Sense::click());
+    let visuals = ui.style().interact_selectable(&response, selected);
+    let painter = ui.painter();
+    let fill = if selected {
+        ui.visuals().selection.bg_fill
+    } else {
+        visuals.bg_fill
+    };
+    painter.rect(rect, 3.0, fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+    let names = |space| if space { "3D" } else { "2D" };
+    let text = visuals.text_color();
+    let main = rect.left_top() + vec2(6.0, 4.0);
+    let font = FontId::proportional(11.0);
+    painter.text(
+        main,
+        Align2::LEFT_TOP,
+        names(layout.space_main()),
+        font,
+        text,
+    );
+    if layout.has_inset() {
+        let inset = Rect::from_min_max(rect.right_bottom() - vec2(19.0, 14.0), rect.right_bottom())
+            .shrink(2.5);
+        painter.rect(
+            inset,
+            1.0,
+            Color32::TRANSPARENT,
+            Stroke::new(1.0, text),
+            egui::StrokeKind::Inside,
+        );
+        let small = FontId::proportional(8.0);
+        let name = names(!layout.space_main());
+        painter.text(inset.center(), Align2::CENTER_CENTER, name, small, text);
+    }
+    response.on_hover_text(layout.describe())
 }
 
 /// Degrees, or "ortho" for 0.
@@ -675,6 +768,19 @@ mod tests {
         let top_right = lat.at((top, top));
         assert!((top_right.x - (LATTICE_PX - 6.0)).abs() < 1e-3);
         assert!((top_right.y - 6.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn swapping_and_hiding_keep_to_the_four_layouts() {
+        use Layout::*;
+        for layout in Layout::ALL {
+            assert_eq!(layout.swapped().swapped(), layout);
+            assert!(!layout.alone().has_inset());
+            assert_eq!(layout.alone().space_main(), layout.space_main());
+            assert_eq!(layout.swapped().has_space(), layout.has_space());
+        }
+        assert_eq!(ChartWithSpace.alone(), Chart);
+        assert_eq!(SpaceWithChart.swapped(), ChartWithSpace);
     }
 
     #[test]
